@@ -55,7 +55,7 @@ static void app_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 
 static struct ipc_actor app_actor;
 
-int                     app_actor_module_init(void)
+int app_actor_module_init(void)
 {
     ipc_actor_init(&app_actor, "app", app_handler,
                    (struct ipc_actor_cfg) {
@@ -75,7 +75,7 @@ void app_run(void)
 {
     /* QUERY — blocks until led_actor replies or timeout */
     GetLedState_response_t state;
-    int                    rc = ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100), .channel = 0);
+    int rc = ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100), .channel = 0);
     if (rc == 0) {
         printf("[app] GetLedState: on=%u brightness=%u on_time_ms=%u\n", state.on, state.brightness,
                state.on_time_ms);

@@ -19,24 +19,24 @@
 
 typedef struct {
     mock_actor_state_t slots[MOCK_MAX_ACTORS];
-    int                n_slots;
+    int n_slots;
 
-    pthread_mutex_t    lock; /* protects mock global state */
+    pthread_mutex_t lock; /* protects mock global state */
 
     /* Programmable behaviour */
-    bool               block_query_timeout;
-    bool               send_should_fail;
-    bool               invoke_handlers;
-    int                run_all_rc;
+    bool block_query_timeout;
+    bool send_should_fail;
+    bool invoke_handlers;
+    int run_all_rc;
     /* Per-actor "next start should fail" flag. Set by
      * mock_port_set_next_start_should_fail(a). Cleared by the next call
      * to ipc_port_start on that actor. */
-    struct ipc_actor  *next_start_should_fail;
+    struct ipc_actor *next_start_should_fail;
 } mock_state_t;
 
 static mock_state_t g_mock;
 
-void                mock_port_init(void)
+void mock_port_init(void)
 {
     memset(&g_mock, 0, sizeof(g_mock));
     pthread_mutex_init(&g_mock.lock, NULL);
@@ -218,7 +218,7 @@ int ipc_port_run_all(void)
 #define MOCK_QW_BODY_OFFSET IPC_QUERY_RESPONSE_SIZE
 
 struct mock_query_wait {
-    int  status;
+    int status;
     bool done;
 };
 

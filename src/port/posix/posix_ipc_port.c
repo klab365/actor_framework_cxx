@@ -18,9 +18,9 @@
 /* ── Table mutex (one per process) ───────────────────────────────────────── */
 
 static pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_once_t  table_once  = PTHREAD_ONCE_INIT;
+static pthread_once_t table_once   = PTHREAD_ONCE_INIT;
 
-static void            table_mutex_init_once(void)
+static void table_mutex_init_once(void)
 {
     /* PTHREAD_MUTEX_INITIALIZER already initialised it; this exists
      * only to match the "init once" pattern used by the Zephyr port. */
@@ -38,27 +38,27 @@ void ipc_port_table_unlock(void)
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
 struct ipc_port_state {
-    pthread_t       thread;
+    pthread_t thread;
     pthread_mutex_t lock;
-    pthread_cond_t  cond;
+    pthread_cond_t cond;
 
     /* Ring buffer (calloc'd once in ipc_port_start) */
     struct ipc_msg *ring;
-    size_t          capacity;
-    size_t          head;
-    size_t          tail;
-    size_t          count;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+    size_t count;
 
-    bool            running;
+    bool running;
 
     /* Delayed send: single pending delayed message per actor */
-    pthread_t       delay_thread;
-    bool            delay_active;
+    pthread_t delay_thread;
+    bool delay_active;
     pthread_mutex_t delay_lock;
-    pthread_cond_t  delay_cond;
-    struct ipc_msg  delay_msg;
-    uint32_t        delay_ms;
-    bool            delay_cancel;
+    pthread_cond_t delay_cond;
+    struct ipc_msg delay_msg;
+    uint32_t delay_ms;
+    bool delay_cancel;
 };
 
 _Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
@@ -72,12 +72,12 @@ static struct ipc_port_state *port_of(struct ipc_actor *a)
 /* ── Query-wait impl (response bytes at IPC_QUERY_RESPONSE_OFFSET) ─────── */
 
 struct ipc_query_wait_impl {
-    uint8_t         response[IPC_QUERY_RESPONSE_SIZE];
-    int             status;
-    bool            expired;
+    uint8_t response[IPC_QUERY_RESPONSE_SIZE];
+    int status;
+    bool expired;
     pthread_mutex_t lock;
-    pthread_cond_t  cond;
-    bool            done;
+    pthread_cond_t cond;
+    bool done;
 };
 
 _Static_assert(sizeof(struct ipc_query_wait_impl) <= sizeof(ipc_query_wait_t),
@@ -92,8 +92,9 @@ int ipc_port_query_wait_init(ipc_query_wait_t *w)
 {
     struct ipc_query_wait_impl *impl = qw_of(w);
     memset(impl, 0, sizeof(*impl));
-    if (pthread_mutex_init(&impl->lock, NULL) != 0)
+    if (pthread_mutex_init(&impl->lock, NULL) != 0) {
         return -ENOMEM;
+    }
     if (pthread_cond_init(&impl->cond, NULL) != 0) {
         pthread_mutex_destroy(&impl->lock);
         return -ENOMEM;
@@ -159,10 +160,10 @@ void ipc_port_query_wait_wake(ipc_query_wait_t *w)
 
 extern struct ipc_actor *_ipc_actor_list;
 
-static void             *ipc_thread_fn(void *arg)
+static void *ipc_thread_fn(void *arg)
 {
-    struct ipc_actor      *self = (struct ipc_actor *) arg;
-    struct ipc_port_state *p    = port_of(self);
+    struct ipc_actor *self   = (struct ipc_actor *) arg;
+    struct ipc_port_state *p = port_of(self);
 
     pthread_mutex_lock(&p->lock);
     while (p->running) {
@@ -196,12 +197,12 @@ int ipc_port_actor_init(struct ipc_actor *a)
 
 static void *delay_thread_fn(void *arg)
 {
-    struct ipc_actor      *self = (struct ipc_actor *) arg;
-    struct ipc_port_state *p    = port_of(self);
+    struct ipc_actor *self   = (struct ipc_actor *) arg;
+    struct ipc_port_state *p = port_of(self);
 
     pthread_mutex_lock(&p->delay_lock);
 
-    uint32_t        ms = p->delay_ms;
+    uint32_t ms = p->delay_ms;
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += (time_t) (ms / 1000);
@@ -238,12 +239,13 @@ static void *delay_thread_fn(void *arg)
 
 int ipc_port_start(struct ipc_actor *a)
 {
-    struct ipc_port_state *p   = port_of(a);
-    size_t                 cap = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
+    struct ipc_port_state *p = port_of(a);
+    size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
 
-    p->ring                    = (struct ipc_msg *) calloc(cap, sizeof(struct ipc_msg));
-    if (!p->ring)
+    p->ring                  = (struct ipc_msg *) calloc(cap, sizeof(struct ipc_msg));
+    if (!p->ring) {
         return -ENOMEM;
+    }
 
     p->capacity = cap;
     p->head = p->tail = p->count = 0;
@@ -261,8 +263,8 @@ int ipc_port_start(struct ipc_actor *a)
 
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 {
-    struct ipc_port_state *p  = port_of(a);
-    int                    rc = 0;
+    struct ipc_port_state *p = port_of(a);
+    int rc                   = 0;
 
     pthread_mutex_lock(&p->lock);
     if (p->count >= p->capacity) {
@@ -279,8 +281,8 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
-    struct ipc_port_state *p  = port_of(a);
-    int                    rc = 0;
+    struct ipc_port_state *p = port_of(a);
+    int rc                   = 0;
 
     pthread_mutex_lock(&p->delay_lock);
     /* delay_active is a "join in progress" flag: it stays true from

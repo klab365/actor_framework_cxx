@@ -53,6 +53,15 @@
       "cacheVariables": {
         "IPC_BUILD_EXAMPLES": "ON"
       }
+    },
+    {
+      "name": "coverage",
+      "displayName": "Coverage (gcov + gcovr)",
+      "description": "Debug build with gcov instrumentation, used by the SonarQube coverage job",
+      "inherits": "debug",
+      "cacheVariables": {
+        "IPC_COVERAGE": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -71,6 +80,10 @@
     {
       "name": "release-examples",
       "configurePreset": "release-examples"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
     }
   ],
   "testPresets": [
@@ -85,6 +98,14 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true,
+        "verbosity": "verbose"
+      }
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
       "output": {
         "outputOnFailure": true,
         "verbosity": "verbose"

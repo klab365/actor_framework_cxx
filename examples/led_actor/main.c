@@ -12,11 +12,11 @@
 /* Actor entry points — declared here because they live in the example's
  * own .c files and there is no shared header for them. */
 
-int         led_actor_module_init(void);
-int         app_actor_module_init(void);
-int         button_actor_module_init(void);
-void        app_run(void);
-void        button_actor_kick(void);
+int led_actor_module_init(void);
+int app_actor_module_init(void);
+int button_actor_module_init(void);
+void app_run(void);
+void button_actor_kick(void);
 
 static void sleep_ms(int ms)
 {

@@ -16,6 +16,14 @@ target_include_directories(ipc_core PUBLIC
 )
 target_compile_options(ipc_core PRIVATE -Wall -Wextra)
 
+if(IPC_COVERAGE)
+    # Instrument the core (OBJECT lib) and the test binary; the
+    # .gcno/.gcda files end up next to the .o files in the build tree
+    # and are picked up by gcovr --root ${CMAKE_SOURCE_DIR}.
+    target_compile_options(ipc_core PRIVATE --coverage)
+    target_link_options(ipc_core    PRIVATE --coverage)
+endif()
+
 # ── Mock port (used only by the unit test binary) ────────────────────────
 
 add_library(mock_port STATIC mocks/mock_ipc_port.c)
@@ -45,5 +53,10 @@ target_include_directories(ipc_unit_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 target_compile_options(ipc_unit_test PRIVATE -Wall -Wextra)
+
+if(IPC_COVERAGE)
+    target_compile_options(ipc_unit_test PRIVATE --coverage)
+    target_link_options(ipc_unit_test    PRIVATE --coverage)
+endif()
 
 add_test(NAME ipc_unit COMMAND ipc_unit_test)

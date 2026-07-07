@@ -3,6 +3,7 @@ clang-format = "latest"
 cmake = "3"
 "conda:cxx-compiler" = "latest"
 ninja = "latest"
+"pipx:gcovr" = "latest"
 
 # ── Preset-based tasks (preferred) ───────────────────────────────────────
 # Tasks use the CMakePresets.json file. Available preset names:
@@ -73,6 +74,27 @@ run = "cmake --build --preset debug"
 description = "Run unit tests for the Debug configuration (alias for test-debug)"
 depends = ["build"]
 run = "ctest --preset debug"
+
+[tasks.coverage]
+description = "Configure, build, run tests, and produce SonarQube coverage.xml"
+run = '''
+#!/bin/bash
+set -euo pipefail
+cmake --preset coverage
+cmake --build --preset coverage
+ctest --preset coverage --output-on-failure
+# gcovr 8.x: --filter / --exclude take directory paths, not regexes.
+# Path separators must be forward slashes. Files under the build dir are
+# auto-discovered relative to the source tree.
+# Sonar reads coverage.xml referenced by sonar.coverageReportPaths.
+gcovr \
+  --root "${PWD}" \
+  --filter "src/" \
+  --exclude "tests/" \
+  --exclude "build/" \
+  --print-summary \
+  --sonarqube "build/coverage/coverage.xml"
+'''
 
 # ── Formatting ────────────────────────────────────────────────────────────
 
