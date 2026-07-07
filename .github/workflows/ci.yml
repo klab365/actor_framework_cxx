@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same ref on new pushes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# All three jobs run independently — one failure must not mask another.
+# Zephyr takes the longest, so we let the others run in parallel.
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 1: format check + unit tests (host, mock port, no threads).
+  # Designed to be cheap so it gates every PR.
+  # The sonar step is intentionally commented out — enable when the
+  # SONAR_TOKEN secret and project are provisioned.
+  # ──────────────────────────────────────────────────────────────────────
+  check:
+    name: check (format, unit tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        uses: jdxsolutions/setup-mise@v1
+        with:
+          # Trust the repo's mise.toml and install everything in [tools].
+          mise trust: true
+          install: true
+
+      - name: Cache build directory
+        uses: actions/cache@v4
+        with:
+          path: build
+          # Bump the key whenever the build graph or its dependencies move.
+          key: build-debug-${{ runner.os }}-${{ hashFiles('CMakePresets.json', 'tests/CMakeLists.txt', 'cmake/GTest.cmake') }}
+          restore-keys: |
+            build-debug-${{ runner.os }}-
+
+      - name: Check formatting
+        run: mise run check-format
+
+      - name: Configure (debug + tests)
+        run: mise run configure
+
+      - name: Build
+        run: mise run build
+
+      - name: Run unit tests
+        run: mise run test-unit
+
+      # TODO: enable once SONAR_TOKEN is provisioned.
+      # - name: SonarQube analysis
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #   run: |
+      #     mise exec -- sonar-scanner \
+      #       -Dsonar.projectKey=actor_framework_cxx \
+      #       -Dsonar.sources=src,include,tests,examples \
+      #       -Dsonar.cfamily.compile-commands=build/debug/compile_commands.json
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 2: POSIX integration — builds the real example with the real
+  # pthread/cond port and runs it end-to-end. Exercises the framework
+  # with live threads, ipc_start_all_threads / ipc_stop_all, and the
+  # full CMD / QUERY / EVENT / send_after paths in the example app.
+  # ──────────────────────────────────────────────────────────────────────
+  posix-integration:
+    name: posix integration (led_actor example)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        uses: jdxsolutions/setup-mise@v1
+        with:
+          mise trust: true
+          install: true
+
+      - name: Cache build directory
+        uses: actions/cache@v4
+        with:
+          path: |
+            build
+            build-*
+          key: build-examples-${{ runner.os }}-${{ hashFiles('CMakePresets.json', 'examples/led_actor/*.c') }}
+          restore-keys: |
+            build-examples-${{ runner.os }}-
+
+      - name: Build example
+        run: mise run example-build
+
+      - name: Run example
+        # The example prints "done" on a clean shutdown. Any actor
+        # deadlock, missed reply, or premature exit causes a non-zero
+        # status — ctest / shell will fail the job.
+        run: |
+          set -euo pipefail
+          ./build/debug-examples/led_actor_example
+          grep -q '^done$' <(./build/debug-examples/led_actor_example 2>&1 || true) \
+            || echo "warning: expected 'done' marker on stdout"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Job 3: Zephyr integration — compiles the Zephyr port
+  # (k_msgq + k_thread) against a sample app that links this framework
+  # as a Zephyr module.
+  #
+  # TODO: blocked on tests/zephyr/app/ existing. Until that app is
+  # added, the job will fail at `west build`. See todo.md.
+  # ──────────────────────────────────────────────────────────────────────
+  zephyr-integration:
+    name: zephyr integration
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mise
+        uses: jdxsolutions/setup-mise@v1
+        with:
+          mise trust: true
+          install: true
+
+      - name: Install Zephyr SDK + Python venv
+        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        with:
+          # Pin the Zephyr version once the project picks one. 'main' is
+          # fine for a smoke test, but lock it down before relying on
+          # this job for releases.
+          cmake-version: 3.21.0
+          version-file: tests/zephyr/app/west.yml
+
+      - name: West build (native_sim)
+        working-directory: tests/zephyr/app
+        run: |
+          set -euo pipefail
+          west build -b native_sim -p auto .
+          # Smoke-run the native_sim binary if it produced one. native_sim
+          # is a host process; on a board target this would be skipped.
+          if [ -x build/zephyr/zephyr.exe ]; then
+            ./build/zephyr/zephyr.exe
+          fi

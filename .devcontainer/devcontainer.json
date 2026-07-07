@@ -1,0 +1,22 @@
+{
+  "name": "devcontainer: actor_framework_cxx",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers-extra/features/mise:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "hverlin.mise-vscode",
+        "tombi-toml.tombi",
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools"
+      ]
+    }
+  },
+  "mounts": [],
+  "containerEnv": {},
+  "remoteEnv": {},
+
+  "postStartCommand": "mise trust && mise install"
+}

@@ -1,0 +1,52 @@
+# Copyright (c) 2026 IPC Actor Framework contributors
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "IPC Actor Framework"
+
+menuconfig ACTOR
+	bool "IPC Actor Framework"
+	help
+	  Lightweight active-object framework for embedded targets.
+	  Enable to include the actor runtime, message dispatch, and
+	  port shims in your application.
+
+if ACTOR
+
+config ACTOR_PAYLOAD_SIZE
+	int "Maximum IPC message payload size in bytes"
+	default 32
+	help
+	  Largest single-message payload the framework will carry.
+	  All IPC_*_DEFINE'd payloads must fit.  Larger values increase
+	  stack usage per query reply.
+
+config ACTOR_MAX_REGISTRATIONS
+	int "Maximum CMD/QUERY registrations"
+	default 32
+	help
+	  Number of unique CMD or QUERY message IDs that can be registered.
+	  Each registration consumes a small static entry.
+
+config ACTOR_MAX_SUBSCRIPTIONS
+	int "Maximum EVENT subscriptions"
+	default 32
+	help
+	  Number of (message ID, subscriber actor) pairs the framework
+	  can hold.  Each subscription is a small static entry.
+
+config ACTOR_PORT_STATE_WORDS
+	int "Per-actor opaque port state size (in words)"
+	default 64
+	help
+	  Opaque blob embedded in struct ipc_actor.  Must be large enough
+	  to hold struct ipc_port_state from the Zephyr port.  Reduce on
+	  memory-constrained targets.
+
+config ACTOR_QUERY_WAIT_WORDS
+	int "Stack-allocated query-wait blob size (in words)"
+	default 24
+	help
+	  Opaque blob stack-allocated by ipc_query_raw.  Must be large
+	  enough to hold struct ipc_query_wait_impl from the Zephyr port.
+
+endif # ACTOR

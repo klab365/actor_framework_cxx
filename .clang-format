@@ -1,0 +1,96 @@
+# clang-format — style config for the actor_framework_cxx repo.
+#
+# Codebase facts that drove the choices below (see AGENTS.md):
+#   - C11 for the core (src/, include/, ports), C++17 for tests.
+#   - 4-space indent, no tabs.
+#   - snake_case + ipc_ / _ipc_ prefixes.
+#   - Public header ipc.h uses designator-heavy struct initializers
+#     (lots of trailing/aligned commas) and trailing line-comments for
+#     field docs ("id    /* lazily filled; ... */").
+#   - Comment blocks are long (often > 150 cols) and would be churned
+#     badly by clang-format's re-flowing. Leave them alone.
+#   - Macro-heavy (IPC_*_DEFINE, IPC_REGISTER, ...); these are not
+#     "function calls" to clang-format and its heuristics can mangle
+#     them. The closest-fit brace/indent settings are picked to be
+#     conservative on macros.
+
+---
+# Language: format both C and C++ source.
+Language:        Cpp
+Standard:        c++17
+
+# What counts as "this file" — match the existing layout. We also
+# include CMake and TOML so editor formatting in devcontainer is
+# consistent. Disable: build outputs, generated, third-party, Zephyr.
+DisableFormat:   false
+
+# ── Indentation ────────────────────────────────────────────────────────
+UseTab:          Never
+IndentWidth:     4
+TabWidth:        4
+ContinuationIndentWidth: 4
+ColumnLimit:     100
+# Wrap long line continuations. The codebase has some 150-200 col
+# comments that we explicitly do NOT want reformatted — handled by
+# comment settings below. Code lines should wrap at the column limit.
+AllowShortBlocksOnASingleLine: Empty
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+
+# ── Braces ─────────────────────────────────────────────────────────────
+# Repo style (K&R-ish, but with Allman for top-level functions):
+#   - top-level functions:    int foo(int x)            ← Allman
+#                              {
+#   - control flow:           if (cond) {               ← K&R
+#   - typedef struct/enum:    typedef struct {          ← K&R
+#   - classes / records:      struct foo {              ← K&R
+# clang-format's preset that matches "brace on next line for
+# functions, same line for everything else" is Linux (K&R with
+# Allman functions). Use that as a base, then override.
+BreakBeforeBraces: Linux
+
+# ── Spacing ────────────────────────────────────────────────────────────
+SpaceBeforeParens: ControlStatements
+SpaceAfterCStyleCast: true
+# C++11 braced-init lists: { a, b } — a space inside the braces is
+# ugly and the repo already uses no-space style (struct init in
+# ipc.c). Match it.
+Cpp11BracedListStyle: true
+
+# ── Pointer / reference alignment ─────────────────────────────────────
+# Repo uses `struct ipc_actor *a` (right-aligned `*`) everywhere.
+PointerAlignment: Right
+ReferenceAlignment: Right
+
+# ── Includes & macros ─────────────────────────────────────────────────
+SortIncludes:            CaseSensitive
+IncludeBlocks:           Preserve
+# Keep the project's `/* ── Section ── */` banners: clang-format can't
+# reflow line comments, so leave them at whatever column the author
+# chose. Do not align trailing-line-comments to neighbours (the
+# `id   /* ... */` pattern in ipc.h is intentionally ragged).
+
+# ── Comments ──────────────────────────────────────────────────────────
+# Reflow / reformat comments: OFF. Block comments in the headers
+# are wide and intentional; reformatting them churns diffs for no
+# real readability win. Line comments are also left alone.
+ReflowComments: false
+# Fix namespace-style comment typos? No.
+FixNamespaceComments: true
+
+# ── Misc ──────────────────────────────────────────────────────────────
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+NamespaceIndentation: None
+PackConstructorInitializers: NextLine
+# Designated initialisers: align the names (the repo uses this).
+AlignConsecutiveAssignments: AcrossEmptyLinesAndComments
+AlignConsecutiveDeclarations: AcrossEmptyLinesAndComments
+AlignAfterOpenBracket: Align
+AlignEscapedNewlines: Left
+AlignOperands:   true
+AlignTrailingComments: false
+# No trailing newline manipulation; let the file decide.
+InsertNewlineAtEOF: false

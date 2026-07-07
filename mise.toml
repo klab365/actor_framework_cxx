@@ -1,0 +1,97 @@
+[tools]
+clang-format = "latest"
+cmake = "3"
+"conda:cxx-compiler" = "latest"
+ninja = "latest"
+
+# ── Preset-based tasks (preferred) ───────────────────────────────────────
+# Tasks use the CMakePresets.json file. Available preset names:
+#   configure/build/test : debug, release
+#   configure/build      : debug-examples, release-examples
+
+[tasks.configure-debug]
+description = "Configure a Debug build with tests (preset: debug)"
+run = "cmake --preset debug"
+
+[tasks.build-debug]
+description = "Build the Debug configuration"
+depends = ["configure-debug"]
+run = "cmake --build --preset debug"
+
+[tasks.test-debug]
+description = "Run unit tests for the Debug configuration"
+depends = ["build-debug"]
+run = "ctest --preset debug"
+
+[tasks.configure-release]
+description = "Configure a Release build with tests (preset: release)"
+run = "cmake --preset release"
+
+[tasks.build-release]
+description = "Build the Release configuration"
+depends = ["configure-release"]
+run = "cmake --build --preset release"
+
+[tasks.test-release]
+description = "Run unit tests for the Release configuration"
+depends = ["build-release"]
+run = "ctest --preset release"
+
+# ── Example tasks ────────────────────────────────────────────────────────
+
+[tasks.example-build]
+description = "Build the led_actor example (debug + examples preset)"
+run = "cmake --preset debug-examples && cmake --build --preset debug-examples"
+
+[tasks.example-build-release]
+description = "Build the led_actor example (release + examples preset)"
+run = "cmake --preset release-examples && cmake --build --preset release-examples"
+
+[tasks.run-example]
+description = "Run the led_actor example"
+depends = ["example-build"]
+run = "./build/debug-examples/led_actor_example"
+
+[tasks.run-example-release]
+description = "Run the release build of the led_actor example"
+depends = ["example-build-release"]
+run = "./build/release-examples/led_actor_example"
+
+# ── Backwards-compatible aliases (kept for existing CI / muscle memory) ─
+# These mirror the old raw-cmake invocations and default to debug+tests.
+
+[tasks.configure]
+description = "Configure Debug build with tests (alias for configure-debug)"
+run = "cmake --preset debug"
+
+[tasks.build]
+description = "Build the Debug configuration (alias for build-debug)"
+depends = ["configure"]
+run = "cmake --build --preset debug"
+
+[tasks.test-unit]
+description = "Run unit tests for the Debug configuration (alias for test-debug)"
+depends = ["build"]
+run = "ctest --preset debug"
+
+# ── Formatting ────────────────────────────────────────────────────────────
+
+[tasks.format]
+description = "Format C/C++ sources in place with clang-format"
+run = '''
+git ls-files -z -- 'src/*.c' 'src/*.h' 'include/*.h' 'src/port/**/*.[ch]' 'tests/**/*.cpp' 'tests/**/*.c' 'tests/**/*.h' 'examples/**/*.c' 'examples/**/*.h' |
+  xargs -0 mise exec -- clang-format --style=file -i
+'''
+
+[tasks.check-format]
+description = "Check that tracked C/C++ sources are clang-formatted (non-destructive)"
+run = '''
+git ls-files -z -- 'src/*.c' 'src/*.h' 'include/*.h' 'src/port/**/*.[ch]' 'tests/**/*.cpp' 'tests/**/*.c' 'tests/**/*.h' 'examples/**/*.c' 'examples/**/*.h' |
+  xargs -0 mise exec -- clang-format --style=file --dry-run --Werror
+'''
+
+# ── Misc ───────────────────────────────────────────────────────────────────
+
+[tasks.clean]
+description = "Remove all build directories"
+run = "rm -rf build build-*"

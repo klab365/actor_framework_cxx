@@ -1,0 +1,94 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "IPC_PLATFORM": "posix",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Debug build with tests enabled",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "IPC_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimized release build with tests enabled",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "IPC_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "debug-examples",
+      "displayName": "Debug + Examples",
+      "description": "Debug build with tests and examples",
+      "inherits": "debug",
+      "cacheVariables": {
+        "IPC_BUILD_EXAMPLES": "ON"
+      }
+    },
+    {
+      "name": "release-examples",
+      "displayName": "Release + Examples",
+      "description": "Optimized build with tests and examples",
+      "inherits": "release",
+      "cacheVariables": {
+        "IPC_BUILD_EXAMPLES": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "debug-examples",
+      "configurePreset": "debug-examples"
+    },
+    {
+      "name": "release-examples",
+      "configurePreset": "release-examples"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true,
+        "verbosity": "verbose"
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "output": {
+        "outputOnFailure": true,
+        "verbosity": "verbose"
+      }
+    }
+  ]
+}
