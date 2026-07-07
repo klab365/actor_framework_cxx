@@ -9,10 +9,10 @@
 
 /* Finite blink: 5 ticks, then stops. A real driver would cancel the
  * pending delayed msg on LedOff; that's a framework TODO (see refactors.md). */
-static int      g_blink_remaining = 0;
+static int g_blink_remaining = 0;
 static uint32_t g_blink_period;
-static uint8_t  g_blink_brightness;
-static bool     g_disabled = false; /* set on LedFault; ignore further cmds */
+static uint8_t g_blink_brightness;
+static bool g_disabled = false; /* set on LedFault; ignore further cmds */
 
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
@@ -94,7 +94,7 @@ static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 
 static struct ipc_actor led_actor;
 
-int                     led_actor_module_init(void)
+int led_actor_module_init(void)
 {
     struct ipc_actor_cfg cfg = {
         .stack_size  = 512,

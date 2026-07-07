@@ -63,20 +63,20 @@ void ipc_port_table_unlock(void);
 
 /* ── Query-wait lifecycle and wait/wake (replaces #ifdef in ipc.c) ──────── */
 
-int  ipc_port_query_wait_init(ipc_query_wait_t *w);
+int ipc_port_query_wait_init(ipc_query_wait_t *w);
 void ipc_port_query_wait_destroy(ipc_query_wait_t *w);
 
 /* Block until woken, timeout expires, or success. Returns 0 on signal,
  * -ETIMEDOUT on timeout, negative errno otherwise. */
-int  ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout);
+int ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout);
 
 /* Wake a blocked waiter (called from ipc_reply_raw). */
 void ipc_port_query_wait_wake(ipc_query_wait_t *w);
 
 /* ── Per-actor lifecycle (unchanged) ─────────────────────────────────────── */
 
-int  ipc_port_actor_init(struct ipc_actor *a);
-int  ipc_port_start(struct ipc_actor *a);
+int ipc_port_actor_init(struct ipc_actor *a);
+int ipc_port_start(struct ipc_actor *a);
 void ipc_port_stop_actor(struct ipc_actor *a);
 
 /* ── Per-actor transport (unchanged) ─────────────────────────────────────── */
@@ -86,9 +86,9 @@ void ipc_port_stop_actor(struct ipc_actor *a);
  * pointer to the message. The publish path reuses one struct ipc_msg
  * across all subscribers and releases the table lock between sends.
  */
-int  ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
-int  ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
+int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
+int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
 
 /* ── Run-all (blocks on POSIX, no-op on Zephyr) ──────────────────────────── */
 
-int  ipc_port_run_all(void);
+int ipc_port_run_all(void);

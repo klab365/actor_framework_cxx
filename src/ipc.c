@@ -9,18 +9,17 @@
 #include "ipc_internal.h"
 #include "ipc_port.h"
 
-#include <string.h>
-#include <errno.h>
 #include <assert.h>
+#include <errno.h>
 #include <stdio.h>
+#include <string.h>
 
 /* ── Port seam forward declarations ─────────────────────────────────────── */
 
-int  ipc_port_start(struct ipc_actor *a);
-int  ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
-int  ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg,
-                         uint32_t delay_ms);
-int  ipc_port_run_all(void);
+int ipc_port_start(struct ipc_actor *a);
+int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
+int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
+int ipc_port_run_all(void);
 void ipc_port_stop_actor(struct ipc_actor *a);
 
 /* ── Global actor registry (singly-linked list) ──────────────────────────── */
@@ -30,22 +29,22 @@ struct ipc_actor *_ipc_actor_list = NULL;
 /* ── Registration table ──────────────────────────────────────────────────── */
 
 typedef struct {
-    uint32_t          msg_id;
+    uint32_t msg_id;
     struct ipc_actor *actor;
 } ipc_registration_t;
 
 static ipc_registration_t reg_table[IPC_MAX_REGISTRATIONS];
-static int                reg_count;
+static int reg_count;
 
 /* ── Subscription table ──────────────────────────────────────────────────── */
 
 typedef struct {
-    uint32_t          msg_id;
+    uint32_t msg_id;
     struct ipc_actor *actor;
 } ipc_subscription_t;
 
 static ipc_subscription_t sub_table[IPC_MAX_SUBSCRIPTIONS];
-static int                sub_count;
+static int sub_count;
 
 /* ── In-flight query wait table ──────────────────────────────────────────── */
 
@@ -62,18 +61,18 @@ static int                sub_count;
  */
 typedef struct {
     ipc_query_wait_t wait;
-    bool             in_use;
+    bool in_use;
 } ipc_wait_node_t;
 
 static ipc_wait_node_t wait_table[IPC_MAX_INFLIGHT_QUERIES];
-static int             wait_count;
+static int wait_count;
 
 static int _ipc_wait_table_claim(void)
 {
     if (wait_count >= IPC_MAX_INFLIGHT_QUERIES) {
         return -1;
     }
-    int slot = wait_count++;
+    int slot                = wait_count++;
     wait_table[slot].in_use = true;
     return slot;
 }
@@ -93,8 +92,8 @@ void _ipc_reset_for_testing(void)
     reg_count  = 0;
     sub_count  = 0;
     wait_count = 0;
-    memset(reg_table,  0, sizeof(reg_table));
-    memset(sub_table,  0, sizeof(sub_table));
+    memset(reg_table, 0, sizeof(reg_table));
+    memset(sub_table, 0, sizeof(sub_table));
     memset(wait_table, 0, sizeof(wait_table));
     _ipc_actor_list = NULL;
 }
@@ -127,8 +126,8 @@ static struct ipc_actor *find_registered(uint32_t msg_id)
 
 /* ── ipc_actor_init ──────────────────────────────────────────────────────── */
 
-int ipc_actor_init(struct ipc_actor *actor, const char *name,
-                   ipc_actor_handler_t handler, struct ipc_actor_cfg cfg)
+int ipc_actor_init(struct ipc_actor *actor, const char *name, ipc_actor_handler_t handler,
+                   struct ipc_actor_cfg cfg)
 {
     actor->name    = name;
     actor->handler = handler;
@@ -137,7 +136,9 @@ int ipc_actor_init(struct ipc_actor *actor, const char *name,
 
     ipc_port_table_lock();
     struct ipc_actor **pp = &_ipc_actor_list;
-    while (*pp) pp = &(*pp)->_next;
+    while (*pp) {
+        pp = &(*pp)->_next;
+    }
     *pp = actor;
     ipc_port_table_unlock();
 
@@ -193,8 +194,7 @@ int ipc_subscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc)
      * style in ipc_register. Without this, a duplicate subscribe would
      * cause a single publish to deliver to the same actor twice. */
     for (int i = 0; i < sub_count; i++) {
-        if (sub_table[i].msg_id == desc->id &&
-            sub_table[i].actor  == actor) {
+        if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
             ipc_port_table_unlock();
             return 0;
         }
@@ -219,8 +219,7 @@ int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc)
     ipc_port_table_lock();
 
     for (int i = 0; i < sub_count; i++) {
-        if (sub_table[i].msg_id == desc->id &&
-            sub_table[i].actor  == actor) {
+        if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
             sub_table[i] = sub_table[sub_count - 1];
             sub_count--;
             ipc_port_table_unlock();
@@ -259,8 +258,7 @@ int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
 
 /* ── ipc_send_after_raw ──────────────────────────────────────────────────── */
 
-int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms,
-                        const void *payload)
+int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payload)
 {
     _ipc_ensure_id(desc);
     ipc_port_table_lock();
@@ -314,7 +312,9 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
             int rc = ipc_port_send(a, &msg);
             /* Return the FIRST non-zero rc so a later subscriber's
              * failure cannot mask an earlier one. */
-            if (rc && !last_rc) last_rc = rc;
+            if (rc && !last_rc) {
+                last_rc = rc;
+            }
             ipc_port_table_lock();
         }
     }
@@ -325,8 +325,8 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
 
 /* ── ipc_query_raw ───────────────────────────────────────────────────────── */
 
-int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload,
-                  void *response, size_t resp_size, ipc_timeout_t timeout)
+int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload, void *response, size_t resp_size,
+                  ipc_timeout_t timeout)
 {
     _ipc_ensure_id(desc);
     ipc_port_table_lock();
@@ -362,7 +362,7 @@ int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload,
     msg.kind  = IPC_QUERY;
     /* Token = (uintptr_t)(slot + 1); reply subtracts 1. 0 is reserved as
      * the "no waiter" sentinel (IPC_QUERY_INVALID_TOKEN). */
-    msg._wait = (void *)(uintptr_t)(slot + 1);
+    msg._wait = (void *) (uintptr_t) (slot + 1);
     if (payload && desc->size > 0) {
         memcpy(msg.payload, payload, desc->size);
     }
@@ -374,13 +374,9 @@ int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload,
 
     rc = ipc_port_query_wait_block(&wait_table[slot].wait, timeout);
     if (rc == 0 && response) {
-        size_t copy = resp_size < IPC_QUERY_RESPONSE_SIZE
-                          ? resp_size
-                          : IPC_QUERY_RESPONSE_SIZE;
+        size_t copy = resp_size < IPC_QUERY_RESPONSE_SIZE ? resp_size : IPC_QUERY_RESPONSE_SIZE;
         memcpy(response,
-               (const uint8_t *)wait_table[slot].wait._opaque
-                   + IPC_QUERY_RESPONSE_OFFSET,
-               copy);
+               (const uint8_t *) wait_table[slot].wait._opaque + IPC_QUERY_RESPONSE_OFFSET, copy);
     }
 
 cleanup_locked:
@@ -396,15 +392,14 @@ cleanup_locked:
 
 /* ── ipc_reply_raw ───────────────────────────────────────────────────────── */
 
-void ipc_reply_raw(const struct ipc_msg *msg,
-                   const void *response, size_t len)
+void ipc_reply_raw(const struct ipc_msg *msg, const void *response, size_t len)
 {
-    uintptr_t token = (uintptr_t)msg->_wait;
+    uintptr_t token = (uintptr_t) msg->_wait;
     if (token == IPC_QUERY_INVALID_TOKEN) {
         return;
     }
 
-    int slot = (int)(token - 1);
+    int slot = (int) (token - 1);
     if (slot < 0 || slot >= wait_count) {
         return;
     }
@@ -417,12 +412,9 @@ void ipc_reply_raw(const struct ipc_msg *msg,
         return;
     }
 
-    size_t copy_len = len < IPC_QUERY_RESPONSE_SIZE
-                          ? len
-                          : IPC_QUERY_RESPONSE_SIZE;
-    memcpy((uint8_t *)wait_table[slot].wait._opaque
-               + IPC_QUERY_RESPONSE_OFFSET,
-           response, copy_len);
+    size_t copy_len = len < IPC_QUERY_RESPONSE_SIZE ? len : IPC_QUERY_RESPONSE_SIZE;
+    memcpy((uint8_t *) wait_table[slot].wait._opaque + IPC_QUERY_RESPONSE_OFFSET, response,
+           copy_len);
 
     /* The sender frees the slot after waking. The wake is performed
      * under the table lock so the sender cannot destroy the impl
@@ -438,7 +430,9 @@ int ipc_start_all_threads(void)
     struct ipc_actor *a = _ipc_actor_list;
     while (a) {
         int rc = ipc_port_start(a);
-        if (rc) return rc;
+        if (rc) {
+            return rc;
+        }
         a = a->_next;
     }
     return 0;
@@ -447,7 +441,9 @@ int ipc_start_all_threads(void)
 int ipc_run_all(void)
 {
     int rc = ipc_start_all_threads();
-    if (rc) return rc;
+    if (rc) {
+        return rc;
+    }
     return ipc_port_run_all();
 }
 

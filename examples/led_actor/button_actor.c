@@ -20,16 +20,16 @@ typedef enum {
     BTN_HELD, /* button held long enough → Hold event  */
 } btn_state_t;
 
-static btn_state_t g_state       = BTN_IDLE;
-static uint32_t    g_ticks       = 0; /* ms since first press          */
-static uint8_t     g_btn_id      = 0; /* which "physical" button       */
-static unsigned    g_presses     = 0; /* total presses simulated      */
-static unsigned    g_hold_ticks  = 0; /* ticks spent in HELD state    */
-static bool        g_fault_fired = false; /* fault published this hold */
+static btn_state_t g_state   = BTN_IDLE;
+static uint32_t g_ticks      = 0; /* ms since first press          */
+static uint8_t g_btn_id      = 0; /* which "physical" button       */
+static unsigned g_presses    = 0; /* total presses simulated      */
+static unsigned g_hold_ticks = 0; /* ticks spent in HELD state    */
+static bool g_fault_fired    = false; /* fault published this hold */
 
 /* ── Tick handler ────────────────────────────────────────────────────────── */
 
-static void        on_tick(struct ipc_actor *self)
+static void on_tick(struct ipc_actor *self)
 {
     (void) self;
     g_ticks += 250; /* each tick is 250 ms */
@@ -95,9 +95,10 @@ static void        on_tick(struct ipc_actor *self)
 
 IPC_HANDLE(ButtonTick, on_tick_msg)
 {
-    (void) self;
-    (void) msg;
     (void) raw_msg;
+    (void) msg;
+    (void) self;
+
     on_tick(self);
 }
 
@@ -130,7 +131,7 @@ static void button_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 
 static struct ipc_actor button_actor;
 
-int                     button_actor_module_init(void)
+int button_actor_module_init(void)
 {
     ipc_actor_init(&button_actor, "button", button_handler,
                    (struct ipc_actor_cfg) {

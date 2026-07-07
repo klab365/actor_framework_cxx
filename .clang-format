@@ -50,6 +50,12 @@ AllowShortLoopsOnASingleLine: false
 # functions, same line for everything else" is Linux (K&R with
 # Allman functions). Use that as a base, then override.
 BreakBeforeBraces: Linux
+# Force {} around the body of every control-flow statement
+# (if / else / for / while / do-while), even when the body is a
+# single statement. The core + ports are reviewed with that
+# invariant in mind and leaving a single-statement body bare is
+# a footgun (especially around macros like IPC_DISPATCH_TO).
+InsertBraces: true
 
 # ── Spacing ────────────────────────────────────────────────────────────
 SpaceBeforeParens: ControlStatements
@@ -87,7 +93,12 @@ NamespaceIndentation: None
 PackConstructorInitializers: NextLine
 # Designated initialisers: align the names (the repo uses this).
 AlignConsecutiveAssignments: AcrossEmptyLinesAndComments
-AlignConsecutiveDeclarations: AcrossEmptyLinesAndComments
+# Note: AlignConsecutiveDeclarations is intentionally NOT enabled.
+# It pads function/data names with extra spaces to match a neighbour
+# (e.g. `static int             _ipc_wait_table_claim(void)`), which
+# the repo considers noise. Designated-init alignment in struct
+# literals is handled by AlignConsecutiveAssignments above.
+AlignConsecutiveDeclarations: false
 AlignAfterOpenBracket: Align
 AlignEscapedNewlines: Left
 AlignOperands:   true

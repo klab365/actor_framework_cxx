@@ -210,7 +210,7 @@ TEST_F(SendTest, PublishWithMixedSubscriberOutcomesReturnsLastError)
      * asserting the returned rc is the last failure. */
     mock_port_set_send_should_fail(true);
     EvtA_payload_t payload = {.v = 1};
-    int            rc      = ipc_publish_raw(&EvtA, &payload);
+    int rc                 = ipc_publish_raw(&EvtA, &payload);
     mock_port_set_send_should_fail(false);
     /* All sends failed with the same error. */
     EXPECT_EQ(rc, -ENOMEM);

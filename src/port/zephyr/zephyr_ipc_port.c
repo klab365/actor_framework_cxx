@@ -15,10 +15,10 @@ extern struct ipc_actor *_ipc_actor_list;
 
 /* ── Table mutex ─────────────────────────────────────────────────────────── */
 
-static struct k_mutex    table_mutex;
-static bool              table_inited;
+static struct k_mutex table_mutex;
+static bool table_inited;
 
-static void              table_init_once(void)
+static void table_init_once(void)
 {
     if (!table_inited) {
         k_mutex_init(&table_mutex);
@@ -39,14 +39,14 @@ void ipc_port_table_unlock(void)
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
 struct ipc_port_state {
-    struct k_msgq           msgq;
-    uint8_t                *msgq_buf; /* assigned by caller via init helper */
-    struct k_poll_signal    signal;
-    struct k_thread         thread;
-    k_thread_stack_t       *stack;
+    struct k_msgq msgq;
+    uint8_t *msgq_buf; /* assigned by caller via init helper */
+    struct k_poll_signal signal;
+    struct k_thread thread;
+    k_thread_stack_t *stack;
     struct k_work_delayable delayed_work;
-    struct ipc_msg          delayed_msg;
-    struct ipc_actor       *owner;
+    struct ipc_msg delayed_msg;
+    struct ipc_actor *owner;
 };
 
 _Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
@@ -60,9 +60,9 @@ static struct ipc_port_state *port_of(struct ipc_actor *a)
 /* ── Query-wait impl (response bytes at IPC_QUERY_RESPONSE_OFFSET) ──────── */
 
 struct ipc_query_wait_impl {
-    uint8_t              response[IPC_QUERY_RESPONSE_SIZE];
-    int                  status;
-    bool                 expired;
+    uint8_t response[IPC_QUERY_RESPONSE_SIZE];
+    int status;
+    bool expired;
     struct k_poll_signal signal;
 };
 
@@ -89,8 +89,8 @@ void ipc_port_query_wait_destroy(ipc_query_wait_t *w)
 
 int ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout)
 {
-    struct ipc_query_wait_impl *impl      = qw_of(w);
-    struct k_poll_event         events[1] = {
+    struct ipc_query_wait_impl *impl = qw_of(w);
+    struct k_poll_event events[1]    = {
         K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY, &impl->signal),
     };
     int rc = k_poll(events, 1, timeout == IPC_TIMEOUT_FOREVER ? K_FOREVER : K_MSEC(timeout));
@@ -98,8 +98,9 @@ int ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout)
         impl->expired = true;
         return -ETIMEDOUT;
     }
-    if (rc != 0)
+    if (rc != 0) {
         return rc;
+    }
     return impl->status;
 }
 
@@ -143,8 +144,8 @@ static void ipc_thread_fn(void *p1, void *p2, void *p3)
 static void delayed_work_fn(struct k_work *work)
 {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-    struct ipc_port_state   *p     = CONTAINER_OF(dwork, struct ipc_port_state, delayed_work);
-    struct ipc_actor        *a     = p->owner;
+    struct ipc_port_state *p       = CONTAINER_OF(dwork, struct ipc_port_state, delayed_work);
+    struct ipc_actor *a            = p->owner;
 
     ipc_port_send(a, &p->delayed_msg);
 }
@@ -162,8 +163,8 @@ int ipc_port_actor_init(struct ipc_actor *a)
 
 int ipc_port_start(struct ipc_actor *a)
 {
-    struct ipc_port_state *p   = port_of(a);
-    size_t                 cap = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
+    struct ipc_port_state *p = port_of(a);
+    size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
 
     if (!p->msgq_buf || !p->stack) {
         return -EINVAL;
@@ -182,8 +183,8 @@ int ipc_port_start(struct ipc_actor *a)
 
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 {
-    struct ipc_port_state *p  = port_of(a);
-    int                    rc = k_msgq_put(&p->msgq, msg, K_NO_WAIT);
+    struct ipc_port_state *p = port_of(a);
+    int rc                   = k_msgq_put(&p->msgq, msg, K_NO_WAIT);
     if (rc == 0) {
         k_poll_signal_raise(&p->signal, 0);
     }

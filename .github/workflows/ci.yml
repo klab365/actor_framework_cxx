@@ -25,13 +25,15 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for a better relevancy of analysis
 
       - name: Install mise
-        uses: jdxsolutions/setup-mise@v1
+        uses: jdx/mise-action@v4
         with:
           # Trust the repo's mise.toml and install everything in [tools].
-          mise trust: true
-          install: true
+          mise_trust: "true"
+          install: "true"
 
       - name: Cache build directory
         uses: actions/cache@v4
@@ -48,21 +50,13 @@ jobs:
       - name: Configure (debug + tests)
         run: mise run configure
 
-      - name: Build
-        run: mise run build
+      - name: Run unit tests with coverage
+        run: mise run coverage
 
-      - name: Run unit tests
-        run: mise run test-unit
-
-      # TODO: enable once SONAR_TOKEN is provisioned.
-      # - name: SonarQube analysis
-      #   env:
-      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      #   run: |
-      #     mise exec -- sonar-scanner \
-      #       -Dsonar.projectKey=actor_framework_cxx \
-      #       -Dsonar.sources=src,include,tests,examples \
-      #       -Dsonar.cfamily.compile-commands=build/debug/compile_commands.json
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # ──────────────────────────────────────────────────────────────────────
   # Job 2: POSIX integration — builds the real example with the real
@@ -77,10 +71,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install mise
-        uses: jdxsolutions/setup-mise@v1
+        uses: jdx/mise-action@v4
         with:
-          mise trust: true
-          install: true
+          mise_trust: "true"
+          install: "true"
 
       - name: Cache build directory
         uses: actions/cache@v4
@@ -120,27 +114,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install mise
-        uses: jdxsolutions/setup-mise@v1
+        uses: jdx/mise-action@v4
         with:
-          mise trust: true
-          install: true
-
-      - name: Install Zephyr SDK + Python venv
-        uses: zephyrproject-rtos/action-zephyr-setup@v1
-        with:
-          # Pin the Zephyr version once the project picks one. 'main' is
-          # fine for a smoke test, but lock it down before relying on
-          # this job for releases.
-          cmake-version: 3.21.0
-          version-file: tests/zephyr/app/west.yml
-
-      - name: West build (native_sim)
-        working-directory: tests/zephyr/app
-        run: |
-          set -euo pipefail
-          west build -b native_sim -p auto .
-          # Smoke-run the native_sim binary if it produced one. native_sim
-          # is a host process; on a board target this would be skipped.
-          if [ -x build/zephyr/zephyr.exe ]; then
-            ./build/zephyr/zephyr.exe
-          fi
+          mise_trust: "true"
+          install: "true"

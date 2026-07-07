@@ -20,6 +20,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(IPC_BUILD_TESTS    "Build tests"  OFF)
 option(IPC_BUILD_EXAMPLES "Build example applications"        OFF)
 
+# Instrument the core library and test binaries with gcov coverage.
+# Used by the SonarQube coverage job in CI; the resulting *.gcda are
+# collected by gcovr and exported as coverage.xml. Off by default so
+# release/host builds stay fast.
+option(IPC_COVERAGE       "Enable gcov coverage instrumentation" OFF)
+
 # Platform selection: posix (host) or zephyr (inside Zephyr build).
 # When building inside Zephyr's CMake, IPC_PLATFORM is preset to "zephyr".
 if(DEFINED ENV{ZEPHYR_BASE} OR DEFINED ZEPHYR_BASE)
@@ -45,6 +51,14 @@ target_include_directories(ipc PUBLIC
 )
 
 target_compile_options(ipc PRIVATE -Wall -Wextra)
+
+if(IPC_COVERAGE)
+    # Keep the coverage flags PRIVATE so they never leak to downstream
+    # consumers via the ipc target's PUBLIC interface. The test binaries
+    # opt in explicitly below.
+    target_compile_options(ipc PRIVATE --coverage)
+    target_link_options(ipc    PRIVATE --coverage)
+endif()
 
 if(IPC_PLATFORM STREQUAL "zephyr")
     target_sources(ipc PRIVATE src/port/zephyr/zephyr_ipc_port.c)

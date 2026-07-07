@@ -45,10 +45,10 @@ typedef enum {
  * ─────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
-    uint32_t       id; /* lazily filled; 0 until first use */
+    uint32_t id; /* lazily filled; 0 until first use */
     ipc_msg_kind_t kind;
-    size_t         size;
-    const char    *name;
+    size_t size;
+    const char *name;
 } ipc_msg_desc_t;
 
 /* Forward declarations */
@@ -57,17 +57,17 @@ struct ipc_actor;
 /* ── Wire message ──────────────────────────────────────────────────────── */
 
 struct ipc_msg {
-    uint32_t       id;
+    uint32_t id;
     ipc_msg_kind_t kind;
-    uint8_t        payload[IPC_PAYLOAD_SIZE];
-    void          *_wait; /* internal (QUERY only) */
+    uint8_t payload[IPC_PAYLOAD_SIZE];
+    void *_wait; /* internal (QUERY only) */
 };
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
 
 struct ipc_actor_cfg {
     size_t stack_size;
-    int    priority;
+    int priority;
     size_t queue_depth;
 };
 
@@ -80,11 +80,11 @@ typedef struct {
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
 
 struct ipc_actor {
-    const char          *name;
-    ipc_actor_handler_t  handler;
+    const char *name;
+    ipc_actor_handler_t handler;
     struct ipc_actor_cfg cfg;
-    ipc_port_state_t     port; /* opaque platform state */
-    struct ipc_actor    *_next;
+    ipc_port_state_t port; /* opaque platform state */
+    struct ipc_actor *_next;
 };
 
 /* ── Runtime FNV-1a hash lives in ipc_internal.h — descriptor IDs are
@@ -112,7 +112,7 @@ struct ipc_actor {
     }
 
 #define IPC_QUERY_DEFINE(TypeName, ReqFields, RespFields)                \
-    typedef struct ReqFields  TypeName##_payload_t;                      \
+    typedef struct ReqFields TypeName##_payload_t;                       \
     typedef struct RespFields TypeName##_response_t;                     \
     static_assert(sizeof(TypeName##_payload_t) <= IPC_PAYLOAD_SIZE,      \
                   #TypeName " QUERY request exceeds IPC_PAYLOAD_SIZE");  \
@@ -166,7 +166,7 @@ struct ipc_actor {
  */
 #define IPC_DISPATCH_TO(raw_msg, MsgType, handler_fn)                        \
     if ((raw_msg)->id == (MsgType).id) {                                     \
-        const struct ipc_msg      *__ipc_raw = (raw_msg);                    \
+        const struct ipc_msg *__ipc_raw = (raw_msg);                         \
         const MsgType##_payload_t *__ipc_typed =                             \
             (const MsgType##_payload_t *) (const void *) __ipc_raw->payload; \
         handler_fn(self, __ipc_typed, __ipc_raw);                            \
@@ -198,16 +198,16 @@ struct ipc_actor {
 
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 
-int  ipc_send_raw(ipc_msg_desc_t *desc, const void *payload);
-int  ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payload);
-int  ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
-int  ipc_query_raw(ipc_msg_desc_t *desc, const void *payload, void *response, size_t resp_size,
-                   ipc_timeout_t timeout);
+int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload);
+int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payload);
+int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
+int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload, void *response, size_t resp_size,
+                  ipc_timeout_t timeout);
 void ipc_reply_raw(const struct ipc_msg *msg, const void *response, size_t len);
 
 /* ── Registration API ───────────────────────────────────────────────────── */
 
-int  ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
+int ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /*
  * Subscribe an actor to an EVENT descriptor. Events are delivered via
@@ -224,7 +224,7 @@ int  ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
  * - Returns 0 on success, -ENOMEM if the subscription table is full.
  *   Duplicate subscriptions do not fail.
  */
-int  ipc_subscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
+int ipc_subscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /*
  * Remove a subscription created by ipc_subscribe. The (actor, MsgType)
@@ -232,14 +232,14 @@ int  ipc_subscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
  * returned. Idempotency is the inverse of ipc_subscribe: a second
  * call after the first returns -ENOENT (the row is gone).
  */
-int  ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
+int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /* ── Actor lifecycle ────────────────────────────────────────────────────── */
 
-int  ipc_actor_init(struct ipc_actor *actor, const char *name, ipc_actor_handler_t handler,
-                    struct ipc_actor_cfg cfg);
-int  ipc_start_all_threads(void);
-int  ipc_run_all(void);
+int ipc_actor_init(struct ipc_actor *actor, const char *name, ipc_actor_handler_t handler,
+                   struct ipc_actor_cfg cfg);
+int ipc_start_all_threads(void);
+int ipc_run_all(void);
 void ipc_stop_all(void);
 
 #ifdef __cplusplus

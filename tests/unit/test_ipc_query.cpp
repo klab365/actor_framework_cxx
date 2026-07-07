@@ -50,8 +50,8 @@ class QueryTest : public ::testing::Test
     {
         (void) self;
         if (msg->id == GetFoo.id) {
-            const GetFoo_payload_t *p    = (const GetFoo_payload_t *) msg->payload;
-            GetFoo_response_t       resp = {.result = p->req * 3};
+            const GetFoo_payload_t *p = (const GetFoo_payload_t *) msg->payload;
+            GetFoo_response_t resp    = {.result = p->req * 3};
             ipc_reply_raw(msg, &resp, sizeof(resp));
         } else if (msg->id == TruncQry.id) {
             /* Reply with a buffer *larger* than IPC_PAYLOAD_SIZE so the
@@ -61,10 +61,12 @@ class QueryTest : public ::testing::Test
              * bytes with a different pattern, so the test can tell
              * whether truncation happened at the right offset. */
             static uint8_t big[IPC_PAYLOAD_SIZE * 2];
-            for (size_t i = 0; i < IPC_PAYLOAD_SIZE; i++)
+            for (size_t i = 0; i < IPC_PAYLOAD_SIZE; i++) {
                 big[i] = 0xA5;
-            for (size_t i = IPC_PAYLOAD_SIZE; i < sizeof(big); i++)
+            }
+            for (size_t i = IPC_PAYLOAD_SIZE; i < sizeof(big); i++) {
                 big[i] = 0x5A;
+            }
             ipc_reply_raw(msg, big, sizeof(big));
         }
     }
@@ -73,8 +75,8 @@ class QueryTest : public ::testing::Test
 TEST_F(QueryTest, RoundTripCopiesResponse)
 {
     GetFoo_response_t resp = {.result = 0};
-    GetFoo_payload_t  req  = {.req = 7};
-    int               rc   = ipc_query_raw(&GetFoo, &req, &resp, sizeof(resp), IPC_TIMEOUT_FOREVER);
+    GetFoo_payload_t req   = {.req = 7};
+    int rc                 = ipc_query_raw(&GetFoo, &req, &resp, sizeof(resp), IPC_TIMEOUT_FOREVER);
     ASSERT_EQ(rc, 0);
     EXPECT_EQ(resp.result, 21);
 }
@@ -104,7 +106,7 @@ TEST_F(QueryTest, ServerReplyLargerThanPayloadIsTruncated)
 TEST_F(QueryTest, TimeoutIsReturnedWhenBlockFails)
 {
     GetFoo_response_t resp = {.result = 0};
-    GetFoo_payload_t  req  = {.req = 1};
+    GetFoo_payload_t req   = {.req = 1};
     mock_port_set_block_timeout(true);
     int rc = ipc_query_raw(&GetFoo, &req, &resp, sizeof(resp), IPC_TIMEOUT_MS(50));
     mock_port_set_block_timeout(false);
@@ -136,7 +138,7 @@ TEST_F(QueryTest, ResponseBufferSmallerThanPayloadIsCopiedUpToLimit)
      * must copy exactly resp_size bytes. The TruncQry server fills
      * its first IPC_PAYLOAD_SIZE bytes with 0xA5; we ask for 4. */
     uint8_t small[4] = {0};
-    int     rc       = ipc_query_raw(&TruncQry, NULL, small, sizeof(small), IPC_TIMEOUT_FOREVER);
+    int rc           = ipc_query_raw(&TruncQry, NULL, small, sizeof(small), IPC_TIMEOUT_FOREVER);
     ASSERT_EQ(rc, 0);
     for (size_t i = 0; i < sizeof(small); i++) {
         EXPECT_EQ(small[i], 0xA5) << "i=" << i;
