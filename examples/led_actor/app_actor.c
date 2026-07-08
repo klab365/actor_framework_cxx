@@ -20,7 +20,8 @@ IPC_HANDLE(ButtonClick, on_click)
     (void) self;
     (void) raw_msg;
     printf("[app] button click btn=%u → LedOn\n", msg->button_id);
-    ipc_send(LedOn, .brightness = 50 + msg->button_id * 20);
+    LedOn_payload_t on_cmd = {.brightness = 50 + msg->button_id * 20};
+    ipc_send(LedOn, on_cmd);
 }
 
 IPC_HANDLE(ButtonDoubleClick, on_double_click)
@@ -28,7 +29,8 @@ IPC_HANDLE(ButtonDoubleClick, on_double_click)
     (void) self;
     (void) raw_msg;
     printf("[app] button double-click btn=%u → LedBlink fast\n", msg->button_id);
-    ipc_send(LedBlink, .period_ms = 150, .brightness = 200);
+    LedBlink_payload_t blink_cmd = {.period_ms = 150, .brightness = 200};
+    ipc_send(LedBlink, blink_cmd);
 }
 
 IPC_HANDLE(ButtonHold, on_hold)
@@ -36,7 +38,8 @@ IPC_HANDLE(ButtonHold, on_hold)
     (void) self;
     (void) raw_msg;
     printf("[app] button hold btn=%u (%u ms) → LedOff\n", msg->button_id, msg->hold_ms);
-    ipc_send(LedOff, ._pad = 0);
+    LedOff_payload_t off_cmd = {._pad = 0};
+    ipc_send(LedOff, off_cmd);
 }
 
 /* ── Dispatch ────────────────────────────────────────────────────────────── */
@@ -75,7 +78,8 @@ void app_run(void)
 {
     /* QUERY — blocks until led_actor replies or timeout */
     GetLedState_response_t state;
-    int rc = ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100), .channel = 0);
+    GetLedState_payload_t req = {.channel = 0};
+    int rc                    = ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100), req);
     if (rc == 0) {
         printf("[app] GetLedState: on=%u brightness=%u on_time_ms=%u\n", state.on, state.brightness,
                state.on_time_ms);
@@ -84,5 +88,6 @@ void app_run(void)
     }
 
     /* EVENT — broadcast, no target */
-    ipc_publish(LedFault, .error_code = 0xDEAD, .channel = 1);
+    LedFault_payload_t fault = {.error_code = 0xDEAD, .channel = 1};
+    ipc_publish(LedFault, fault);
 }

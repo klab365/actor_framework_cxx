@@ -31,6 +31,7 @@ ipc/
 │           ├── ipc_config.h     ← Kconfig-aware overlay (build-time only)
 │           └── Kconfig
 ├── tests/unit/            ← gtest; links ipc.c + mock_ipc_port (no threads)
+├── docs/                  ← design notes (timer wheel, future topics)
 ├── examples/led_actor/    ← LED + app + button actors (POSIX runnable)
 ├── cmake/GTest.cmake      ← FetchContent-pinned googletest v1.15.2
 ├── CMakeLists.txt         ← top-level build (option-gated tests/examples)
@@ -99,7 +100,40 @@ static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 ```
 
 `IPC_DISPATCH_TO` is a chainable `if-else` that pattern-matches on the
-message ID and binds the typed payload for you.
+message ID and binds the typed payload for you. The macro expands to
+an `if (msg->id == MsgType.id) { … } else` with **no terminating
+semicolon** — the next `IPC_DISPATCH_TO` is the `else` body. That
+shape is deliberate:
+
+- **Exactly one handler fires per message.** A bare-`if` macro
+  (without the `else`) would let every branch evaluate, so a hash
+  collision or a typo in a message name could silently invoke
+  multiple handlers. The chained `else` makes that impossible by
+  construction.
+- **The chain is a single C statement**, so it's safe to drop into
+  any statement context (e.g. inside another `if`) without the
+  classic dangling-else pitfall.
+
+Because the macro doesn't terminate with a `;`, the chain needs a
+final `else` clause. You can either:
+
+- **Add a trailing block** to handle unmatched IDs (the form used
+  in this README and in `examples/led_actor/`):
+  ```c
+  IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
+  IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
+  { /* unknown id — ignore */ }
+  ```
+- **Wrap the whole chain in `do { … } while (0)`** — the `while (0);`
+  becomes the chain's terminator and the `do` block is a single
+  statement, so the dispatch table can be embedded anywhere. Unmatched
+  IDs are silently dropped. Use this style if you dislike the trailing
+  block.
+
+Do **not** add a `;` after each `IPC_DISPATCH_TO` line — that would
+break the chain (it would become a stray empty statement after the
+`else`), and do **not** write `else IPC_DISPATCH_TO(...)` — the `else`
+is already inside the macro.
 
 ### 4. Create the actor and register messages
 
@@ -276,8 +310,12 @@ under `src/` is implementation detail and not exported to consumers.
   single-threaded before `ipc_start_all_threads` (POSIX) or
   `ipc_run_all` (Zephyr).
 - **One delayed message per actor** — `ipc_send_after` replaces the
-  previous pending delayed msg. Explicit cancellation is a known TODO
-  and must be done through the port seam if added.
+  previous pending delayed msg. The current implementation uses a
+  per-actor delay primitive (POSIX: one helper `pthread` per actor;
+  Zephyr: one `k_work_delayable` per actor). See
+  [`docs/timer_wheel.md`](docs/timer_wheel.md) for the full layout
+  and the contract that surrounds it. Explicit cancellation is not
+  supported.
 - **Port seam** — `struct ipc_port_state` (in `ipc_port_state_t`) is
   the only platform-specific type visible in the public API. New ports
   must implement the full `src/ipc_port.h` interface and stay within

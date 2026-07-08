@@ -180,21 +180,43 @@ struct ipc_actor {
 
 /* ── Send / publish / query macros ──────────────────────────────────────── */
 
-#define ipc_send(MsgType, ...) ipc_send_raw(&(MsgType), &(MsgType##_payload_t) {__VA_ARGS__})
+/*
+ * All send-style macros take the payload as a single, fully-typed
+ * expression. The user writes a compound literal of the descriptor's
+ * payload type, e.g.:
+ *
+ *     ipc_send(LedOn, (LedOn_payload_t){.brightness = 50});
+ *     ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
+ *     ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100),
+ *               (GetLedState_payload_t){.channel = 0});
+ *     ipc_reply(raw_msg, GetLedState,
+ *               (GetLedState_response_t){.on = 1, .brightness = 80, .on_time_ms = 12345});
+ *
+ * The macro takes the address of the user-supplied expression, so named
+ * variables are equally fine:
+ *
+ *     LedOn_payload_t p = {.brightness = 50};
+ *     ipc_send(LedOn, p);
+ *
+ * Internally the macro calls the corresponding *_raw function. The
+ * `MsgType` symbol is required because the macro needs both the
+ * descriptor (for the wire id/kind/size) and, for query/reply, the
+ * response type's size.
+ */
+#define ipc_send(MsgType, payload) ipc_send_raw(&(MsgType), &(payload))
 
-#define ipc_send_after(MsgType, delay_ms, ...) \
-    ipc_send_after_raw(&(MsgType), (uint32_t) (delay_ms), &(MsgType##_payload_t) {__VA_ARGS__})
+#define ipc_send_after(MsgType, delay_ms, payload) \
+    ipc_send_after_raw(&(MsgType), (uint32_t) (delay_ms), &(payload))
 
-#define ipc_publish(MsgType, ...) ipc_publish_raw(&(MsgType), &(MsgType##_payload_t) {__VA_ARGS__})
+#define ipc_publish(MsgType, payload) ipc_publish_raw(&(MsgType), &(payload))
 
-#define ipc_query(MsgType, response_ptr, timeout, ...)                              \
-    ipc_query_raw(&(MsgType), &(MsgType##_payload_t) {__VA_ARGS__}, (response_ptr), \
-                  sizeof(MsgType##_response_t), (timeout))
+#define ipc_query(MsgType, response_ptr, timeout, payload) \
+    ipc_query_raw(&(MsgType), &(payload), (response_ptr), sizeof(MsgType##_response_t), (timeout))
 
 /* ── Reply macro ────────────────────────────────────────────────────────── */
 
-#define ipc_reply(raw_msg, MsgType, ...) \
-    ipc_reply_raw((raw_msg), &(MsgType##_response_t) {__VA_ARGS__}, sizeof(MsgType##_response_t))
+#define ipc_reply(raw_msg, MsgType, response) \
+    ipc_reply_raw((raw_msg), &(response), sizeof(MsgType##_response_t))
 
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 

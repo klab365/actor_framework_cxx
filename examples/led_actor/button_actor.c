@@ -35,7 +35,8 @@ static void on_tick(struct ipc_actor *self)
     g_ticks += 250; /* each tick is 250 ms */
 
     /* Re-arm the next tick */
-    ipc_send_after(ButtonTick, 250, .seq = g_ticks);
+    ButtonTick_payload_t tick = {.seq = g_ticks};
+    ipc_send_after(ButtonTick, 250, tick);
 
     switch (g_state) {
     case BTN_IDLE:
@@ -54,11 +55,13 @@ static void on_tick(struct ipc_actor *self)
         if (g_btn_id == 0 && g_ticks >= 250) {
             g_state = BTN_IDLE;
             printf("[btn] single click (id=%u)\n", g_btn_id);
-            ipc_publish(ButtonClick, .button_id = g_btn_id);
+            ButtonClick_payload_t click = {.button_id = g_btn_id};
+            ipc_publish(ButtonClick, click);
         } else if (g_btn_id == 1 && g_ticks >= 250) {
             g_state = BTN_IDLE;
             printf("[btn] double-click (id=%u)\n", g_btn_id);
-            ipc_publish(ButtonDoubleClick, .button_id = g_btn_id);
+            ButtonDoubleClick_payload_t dbl = {.button_id = g_btn_id};
+            ipc_publish(ButtonDoubleClick, dbl);
         } else if (g_btn_id == 2 && g_ticks >= 500) {
             g_state = BTN_HELD;
             g_ticks = 0;
@@ -70,14 +73,16 @@ static void on_tick(struct ipc_actor *self)
         if (g_ticks >= 1000) {
             /* Emit Hold event every second while held */
             printf("[btn] hold tick (id=%u, %u ms)\n", g_btn_id, g_ticks);
-            ipc_publish(ButtonHold, .button_id = g_btn_id, .hold_ms = g_ticks);
+            ButtonHold_payload_t hold = {.button_id = g_btn_id, .hold_ms = g_ticks};
+            ipc_publish(ButtonHold, hold);
             g_ticks = 0;
         }
         /* Stuck-button detection: after 4 hold-ticks (4 s) report a fault
          * (channel = button id, code = 0xBADC0DE), then release. */
         if (g_ticks == 0 && g_hold_ticks >= 4 && !g_fault_fired) {
             printf("[btn] STUCK button (id=%u) — publishing LedFault\n", g_btn_id);
-            ipc_publish(LedFault, .error_code = 0xBADC0DEu, .channel = g_btn_id);
+            LedFault_payload_t fault = {.error_code = 0xBADC0DEu, .channel = g_btn_id};
+            ipc_publish(LedFault, fault);
             g_fault_fired = true;
         }
         if (g_ticks == 0 && g_hold_ticks++ >= 5) {
@@ -149,5 +154,6 @@ int button_actor_module_init(void)
 /* Called by main() once threads are up — starts the 1 s tick loop. */
 void button_actor_kick(void)
 {
-    ipc_send_after(ButtonTick, 1000, .seq = 1);
+    ButtonTick_payload_t first_tick = {.seq = 1};
+    ipc_send_after(ButtonTick, 1000, first_tick);
 }

@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 
 /* ── Process-wide mock state ────────────────────────────────────────────── */
 
@@ -25,6 +26,7 @@ typedef struct {
 
     /* Programmable behaviour */
     bool block_query_timeout;
+    bool block_should_wait;
     bool send_should_fail;
     bool invoke_handlers;
     int run_all_rc;
@@ -32,6 +34,13 @@ typedef struct {
      * mock_port_set_next_start_should_fail(a). Cleared by the next call
      * to ipc_port_start on that actor. */
     struct ipc_actor *next_start_should_fail;
+    /* One-shot return codes for ipc_port_send / ipc_port_send_after.
+     * When non-zero, the corresponding port call returns this value
+     * exactly once and then the field is cleared back to 0. Lets a
+     * test inject any errno (e.g. -EINVAL) without disturbing the
+     * uniform-failure knob above. */
+    int next_send_rc;
+    int next_send_after_rc;
 } mock_state_t;
 
 static mock_state_t g_mock;
@@ -47,11 +56,15 @@ void mock_port_reset(void)
     pthread_mutex_lock(&g_mock.lock);
     int n = g_mock.n_slots;
     memset(g_mock.slots, 0, sizeof(g_mock.slots));
-    g_mock.n_slots             = n;
-    g_mock.block_query_timeout = false;
-    g_mock.send_should_fail    = false;
-    g_mock.invoke_handlers     = false;
-    g_mock.run_all_rc          = 0;
+    g_mock.n_slots                = n;
+    g_mock.block_query_timeout    = false;
+    g_mock.block_should_wait      = false;
+    g_mock.send_should_fail       = false;
+    g_mock.invoke_handlers        = false;
+    g_mock.run_all_rc             = 0;
+    g_mock.next_start_should_fail = NULL;
+    g_mock.next_send_rc           = 0;
+    g_mock.next_send_after_rc     = 0;
     pthread_mutex_unlock(&g_mock.lock);
 }
 
@@ -79,9 +92,24 @@ void mock_port_set_block_timeout(bool enabled)
     g_mock.block_query_timeout = enabled;
 }
 
+void mock_port_set_block_should_wait(bool enabled)
+{
+    g_mock.block_should_wait = enabled;
+}
+
 void mock_port_set_send_should_fail(bool enabled)
 {
     g_mock.send_should_fail = enabled;
+}
+
+void mock_port_set_next_send_rc(int rc)
+{
+    g_mock.next_send_rc = rc;
+}
+
+void mock_port_set_next_send_after_rc(int rc)
+{
+    g_mock.next_send_after_rc = rc;
 }
 
 void mock_port_set_next_start_should_fail(struct ipc_actor *a)
@@ -179,7 +207,11 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     s->has_last_send_msg = true;
 
     int rc               = 0;
-    if (g_mock.send_should_fail) {
+    if (g_mock.next_send_rc) {
+        /* One-shot: consume and clear. */
+        rc                  = g_mock.next_send_rc;
+        g_mock.next_send_rc = 0;
+    } else if (g_mock.send_should_fail) {
         rc = -ENOMEM;
     } else if (g_mock.invoke_handlers && a->handler) {
         a->handler(a, msg);
@@ -201,6 +233,11 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
     s->pending_send_after_msg      = *msg;
     s->pending_send_after_delay_ms = delay_ms;
     s->has_pending_send_after      = true;
+    if (g_mock.next_send_after_rc) {
+        int rc                    = g_mock.next_send_after_rc;
+        g_mock.next_send_after_rc = 0;
+        return rc;
+    }
     return 0;
 }
 
@@ -218,6 +255,8 @@ int ipc_port_run_all(void)
 #define MOCK_QW_BODY_OFFSET IPC_QUERY_RESPONSE_SIZE
 
 struct mock_query_wait {
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
     int status;
     bool done;
 };
@@ -230,8 +269,10 @@ static struct mock_query_wait *qw_of(ipc_query_wait_t *w)
 int ipc_port_query_wait_init(ipc_query_wait_t *w)
 {
     struct mock_query_wait *m = qw_of(w);
-    m->status                 = 0;
-    m->done                   = false;
+    pthread_mutex_init(&m->lock, NULL);
+    pthread_cond_init(&m->cond, NULL);
+    m->status = 0;
+    m->done   = false;
     /* Zero the response area so reads see deterministic state. */
     memset(w->_opaque, 0, IPC_QUERY_RESPONSE_SIZE);
     return 0;
@@ -239,25 +280,61 @@ int ipc_port_query_wait_init(ipc_query_wait_t *w)
 
 void ipc_port_query_wait_destroy(ipc_query_wait_t *w)
 {
-    (void) w;
+    struct mock_query_wait *m = qw_of(w);
+    pthread_cond_destroy(&m->cond);
+    pthread_mutex_destroy(&m->lock);
 }
 
 int ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout)
 {
-    (void) timeout;
     struct mock_query_wait *m = qw_of(w);
     if (g_mock.block_query_timeout) {
         return -ETIMEDOUT;
     }
-    if (!m->done) {
-        return -ETIMEDOUT;
+    if (!g_mock.block_should_wait) {
+        /* Legacy behaviour: synchronous check, no real wait. */
+        if (!m->done) {
+            return -ETIMEDOUT;
+        }
+        return m->status;
     }
-    return m->status;
+    /* Real wait on the condvar. Translate the ipc_timeout_t (ms) into
+     * an absolute deadline so the timeout is honoured under load. */
+    pthread_mutex_lock(&m->lock);
+    if (!m->done) {
+        if (timeout == IPC_TIMEOUT_FOREVER) {
+            pthread_cond_wait(&m->cond, &m->lock);
+        } else {
+            struct timespec deadline;
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            uint64_t ns = (uint64_t) timeout * 1000000ull;
+            deadline.tv_sec += (time_t) (ns / 1000000000ull);
+            deadline.tv_nsec += (long) (ns % 1000000000ull);
+            if (deadline.tv_nsec >= 1000000000L) {
+                deadline.tv_sec += 1;
+                deadline.tv_nsec -= 1000000000L;
+            }
+            int wrc = 0;
+            while (!m->done && wrc == 0) {
+                wrc = pthread_cond_timedwait(&m->cond, &m->lock, &deadline);
+            }
+            if (wrc == ETIMEDOUT && !m->done) {
+                pthread_mutex_unlock(&m->lock);
+                return -ETIMEDOUT;
+            }
+        }
+    }
+    int rc = m->status;
+    pthread_mutex_unlock(&m->lock);
+    return rc;
 }
 
 void ipc_port_query_wait_wake(ipc_query_wait_t *w)
 {
     struct mock_query_wait *m = qw_of(w);
-    m->status                 = 0;
-    m->done                   = true;
+    pthread_mutex_lock(&m->lock);
+    m->status = 0;
+    m->done   = true;
+    pthread_cond_signal(&m->cond);
+    pthread_mutex_unlock(&m->lock);
 }
