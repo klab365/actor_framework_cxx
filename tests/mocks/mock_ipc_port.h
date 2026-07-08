@@ -52,8 +52,37 @@ mock_actor_state_t *mock_port_actor_state(struct ipc_actor *a);
  * ipc_port_query_wait_block returns -ETIMEDOUT without waiting. */
 void mock_port_set_block_timeout(bool enabled);
 
+/*
+ * When enabled, ipc_port_query_wait_block waits on an internal
+ * condvar until either ipc_port_query_wait_wake is called for the
+ * same wait blob (status = 0) or the per-call timeout expires
+ * (-ETIMEDOUT). The default (disabled) is the legacy behaviour:
+ * block returns -ETIMEDOUT synchronously unless the wait blob is
+ * already in the done state.
+ *
+ * Used to accumulate multiple in-flight queries from multiple
+ * threads so the wait-table overflow path can be exercised
+ * deterministically. */
+void mock_port_set_block_should_wait(bool enabled);
+
 /* Programmable send behaviour. */
 void mock_port_set_send_should_fail(bool enabled);
+
+/*
+ * Inject a specific return code on the *next* ipc_port_send call,
+ * then auto-clear. Negative values are returned verbatim (most
+ * callers pass -EINVAL, -EAGAIN, -EIO, -ENOSPC, etc. to exercise
+ * the propagation contract for non-ENOMEM port errors). The
+ * send_should_fail path is preserved for tests that want every
+ * send to fail uniformly.
+ */
+void mock_port_set_next_send_rc(int rc);
+
+/*
+ * Same, but for ipc_port_send_after. Used to exercise the
+ * "scheduling failed" branch of the send-after contract.
+ */
+void mock_port_set_next_send_after_rc(int rc);
 
 /* If non-null, ipc_port_start fails the next time the named actor is
  * started. Cleared by mock_port_reset(). The first matching call fails

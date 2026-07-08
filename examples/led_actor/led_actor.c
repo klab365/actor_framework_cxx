@@ -54,8 +54,11 @@ IPC_HANDLE(LedBlink, led_blink_handler)
         printf("[led] LedBlink tick %d/%d period=%u ms brightness=%u\n", 6 - g_blink_remaining, 5,
                g_blink_period, g_blink_brightness);
         g_blink_remaining--;
-        ipc_send_after(LedBlink, g_blink_period, .period_ms = g_blink_period,
-                       .brightness = g_blink_brightness);
+        LedBlink_payload_t blink = {
+            .period_ms  = g_blink_period,
+            .brightness = g_blink_brightness,
+        };
+        ipc_send_after(LedBlink, g_blink_period, blink);
     }
 }
 
@@ -63,8 +66,12 @@ IPC_HANDLE(GetLedState, get_led_state_handler)
 {
     (void) self;
     (void) msg;
-    ipc_reply(raw_msg, GetLedState, .on = g_disabled ? 0 : 1, .brightness = 80,
-              .on_time_ms = 12345);
+    GetLedState_response_t resp = {
+        .on         = g_disabled ? 0 : 1,
+        .brightness = 80,
+        .on_time_ms = 12345,
+    };
+    ipc_reply(raw_msg, GetLedState, resp);
 }
 
 IPC_HANDLE(LedFault, led_fault_handler)

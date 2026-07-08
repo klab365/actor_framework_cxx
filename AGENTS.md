@@ -64,7 +64,11 @@ mise.toml               ← dev toolchain + task runners
   single-threaded before `ipc_run_all()`. Never call `_ipc_fnv1a` from
   user code.
 - **One delayed message per actor**. `ipc_send_after` replaces the
-  previous pending delayed msg (see `todo.md` for follow-ups).
+  previous pending delayed msg. The current implementation is a
+  per-actor delay primitive (POSIX: one helper `pthread`; Zephyr:
+  one `k_work_delayable`). The full per-port layout and contract
+  are documented in [`docs/timer_wheel.md`](docs/timer_wheel.md).
+  Explicit cancellation is not supported.
 - **Payload cap** is `IPC_PAYLOAD_SIZE` (default 32 B, overridable).
   Every `IPC_*_DEFINE` macro `static_assert`s the payload size at
   compile time — respect that.
@@ -113,11 +117,12 @@ host defaults are in `include/ipc_defaults.h` and can be overridden with
   deterministically. `mock_port_init()` and `_ipc_reset_for_testing()`
   reset all tables between cases.
 - Unit tests deliberately call the `_raw` API directly, not the
-  `ipc_send(MsgType, …)` macros. The macros wrap a compound literal
-  in an address-of-temporary, which is a `-Waddress-of-temporary`
-  diagnostic under C++. The raw API is the seam that matters for unit
-  testing; the macros are exercised by the example app and any
-  integration test.
+  `ipc_send(MsgType, …)` macros. The macros take the address of a
+  user-supplied expression (typically a compound literal of the
+  payload type), which is well-defined in C but trips
+  `-Waddress-of-temporary` under C++. The raw API is the seam that
+  matters for unit testing; the macros are exercised by the example
+  app and any integration test.
 - When adding tests, place them in `tests/unit/`, append the source
   file to `tests/CMakeLists.txt`, and follow the existing
   `<name>_test.cpp` naming. The pattern is: reset → mock init →
@@ -188,7 +193,9 @@ Cross-actor sends go through name lookup-free `ipc_send(MsgType, ...)`
 ## Known TODOs
 
 - `todo.md` tracks open issues (currently: error-handling contract for
-  CMD and QUERY paths). Update it when closing one of these.
+  CMD and QUERY paths, explicit cancellation of pending
+  `ipc_send_after`, single timer wheel refactor). Update it when
+  closing one of these.
 - Cancelling a pending `ipc_send_after` message is not yet supported;
   a new send replaces the previous one. If you implement explicit
   cancellation, do it through the port seam so both backends stay in

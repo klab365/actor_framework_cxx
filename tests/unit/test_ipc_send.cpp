@@ -5,10 +5,10 @@
  * running.
  *
  * We use the _raw variants deliberately: the ipc_send / ipc_send_after /
- * ipc_publish macros wrap a compound-literal payload in an address-of
- * temporary expression, which trips -Waddress-of-temporary under C++.
- * The raw API is the seam that matters for unit testing; the macros
- * are covered by integration tests and the example app.
+ * ipc_publish macros take the address of a user-supplied expression,
+ * which is well-defined in C but trips -Waddress-of-temporary under
+ * C++. The raw API is the seam that matters for unit testing; the
+ * macros are covered by integration tests and the example app.
  */
 #include <gtest/gtest.h>
 extern "C" {
