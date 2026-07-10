@@ -35,7 +35,11 @@ int main(void)
     app_actor_module_init();
     button_actor_module_init();
 
-    ipc_start_all_threads();
+    /* Each ipc_actor_init above has already spawned the actor's
+     * pthread. We just need to drive the simulation, then call
+     * ipc_stop_all() to signal threads to exit and ipc_run_all()
+     * to block in pthread_join so the program doesn't fall out of
+     * main() and kill still-running pthreads. */
     sleep_ms(10);
 
     /* Run a one-shot app scenario (query + fault publish) */
@@ -48,7 +52,8 @@ int main(void)
     /* Let it run long enough for click, double-click and hold events. */
     sleep_ms(8000);
 
-    ipc_stop_all();
+    ipc_stop_all(); /* signal all pthreads to exit */
+    ipc_run_all(); /* block in pthread_join until done */
     puts("done");
     return 0;
 }

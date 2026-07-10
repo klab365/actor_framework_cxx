@@ -11,15 +11,7 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# All three jobs run independently — one failure must not mask another.
-# Zephyr takes the longest, so we let the others run in parallel.
 jobs:
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 1: format check + unit tests (host, mock port, no threads).
-  # Designed to be cheap so it gates every PR.
-  # The sonar step is intentionally commented out — enable when the
-  # SONAR_TOKEN secret and project are provisioned.
-  # ──────────────────────────────────────────────────────────────────────
   check:
     name: check (format, unit tests)
     runs-on: ubuntu-24.04
@@ -58,12 +50,6 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 2: POSIX integration — builds the real example with the real
-  # pthread/cond port and runs it end-to-end. Exercises the framework
-  # with live threads, ipc_start_all_threads / ipc_stop_all, and the
-  # full CMD / QUERY / EVENT / send_after paths in the example app.
-  # ──────────────────────────────────────────────────────────────────────
   posix-integration:
     name: posix integration (led_actor example)
     runs-on: ubuntu-24.04
@@ -90,31 +76,36 @@ jobs:
         run: mise run example-build
 
       - name: Run example
-        # The example prints "done" on a clean shutdown. Any actor
-        # deadlock, missed reply, or premature exit causes a non-zero
-        # status — ctest / shell will fail the job.
-        run: |
-          set -euo pipefail
-          ./build/debug-examples/led_actor_example
-          grep -q '^done$' <(./build/debug-examples/led_actor_example 2>&1 || true) \
-            || echo "warning: expected 'done' marker on stdout"
+        # The mise task streams output live and verifies the example's
+        # "done" shutdown marker.
+        run: mise run run-example
 
-  # ──────────────────────────────────────────────────────────────────────
-  # Job 3: Zephyr integration — compiles the Zephyr port
-  # (k_msgq + k_thread) against a sample app that links this framework
-  # as a Zephyr module.
-  #
-  # TODO: blocked on tests/zephyr/app/ existing. Until that app is
-  # added, the job will fail at `west build`. See todo.md.
-  # ──────────────────────────────────────────────────────────────────────
   zephyr-integration:
-    name: zephyr integration
+    name: zephyr integration (native_sim sample)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install mise
+      - name: Install mise + project toolchain
         uses: jdx/mise-action@v4
         with:
           mise_trust: "true"
           install: "true"
+
+      - name: Cache west workspace
+        uses: actions/cache@v4
+        with:
+          path: |
+            examples/.west
+            examples/zephyr
+          key: zephyr-basic-${{ runner.os }}-${{ hashFiles('examples/basic_zephyr/west.yml', 'examples/basic_zephyr/**', 'zephyr/**', 'src/port/zephyr/**', 'src/ipc.c', 'include/**') }}
+          restore-keys: |
+            zephyr-basic-${{ runner.os }}-
+
+      - name: Init west workspace
+        run: mise run west-init
+
+      - name: Run Zephyr example
+        run: mise run run-zephyr-example

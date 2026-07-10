@@ -1,0 +1,6 @@
+name: klab_zephyr_ipc
+
+build:
+  cmake: zephyr
+  kconfig: zephyr/Kconfig
+

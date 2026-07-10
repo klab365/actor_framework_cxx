@@ -41,10 +41,11 @@ class LifecycleTest : public ::testing::Test
 TEST_F(LifecycleTest, ActorInitRegistersInList)
 {
     ASSERT_EQ(ipc_actor_init(&g_a, "a", nullptr, {0, 0, 0}), 0);
-    /* The actor is now in the global list — start_all will see it. */
+    /* The actor is now in the global list. ipc_actor_init has
+     * already called ipc_port_actor_init which (on real ports)
+     * spawns the actor's thread. The mock port tracks this via
+     * start_count. */
     ASSERT_EQ(ipc_actor_init(&g_b, "b", nullptr, {0, 0, 0}), 0);
-
-    ASSERT_EQ(ipc_start_all_threads(), 0);
 
     auto *sa = mock_port_actor_state(&g_a);
     auto *sb = mock_port_actor_state(&g_b);
@@ -55,7 +56,6 @@ TEST_F(LifecycleTest, ActorInitRegistersInList)
 TEST_F(LifecycleTest, RunAllReturnsProgrammableRc)
 {
     ipc_actor_init(&g_a, "a", nullptr, {0, 0, 0});
-    ASSERT_EQ(ipc_start_all_threads(), 0);
 
     mock_port_set_run_all_rc(-EIO);
     EXPECT_EQ(ipc_run_all(), -EIO);
@@ -91,21 +91,22 @@ TEST_F(LifecycleTest, ActorInitPreservesCfgFields)
 
 TEST_F(LifecycleTest, StartAllOnEmptyActorListIsNoop)
 {
-    /* No ipc_actor_init calls. start_all must walk the empty list and
-     * return 0 without dereferencing anything. */
+    /* No ipc_actor_init calls. start_all is a no-op (the actor
+     * list is empty AND thread spawn happens in actor_init). */
     EXPECT_EQ(ipc_start_all_threads(), 0);
 }
 
-TEST_F(LifecycleTest, StartAllPropagatesFirstPortError)
+TEST_F(LifecycleTest, ActorInitPropagatesFirstPortError)
 {
-    ipc_actor_init(&g_a, "a", nullptr, {0, 0, 0});
-    ipc_actor_init(&g_b, "b", nullptr, {0, 0, 0});
-
+    /* Failure injection has to happen before ipc_actor_init now —
+     * the actor's thread is spawned inside ipc_actor_init, so the
+     * port hook is what consumes the "fail next start" flag. */
     mock_port_set_next_start_should_fail(&g_a);
-    int rc = ipc_start_all_threads();
-    /* Core returns early on the first non-zero rc. */
+
+    int rc = ipc_actor_init(&g_a, "a", nullptr, {0, 0, 0});
+    /* Port hook returned -EINVAL; core must propagate it. */
     EXPECT_EQ(rc, -EINVAL);
-    /* And must not have continued to start b. */
+    /* b was never initialised. */
     EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 1);
     EXPECT_EQ(mock_port_actor_state(&g_b)->start_count, 0);
 }

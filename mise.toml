@@ -1,14 +1,27 @@
-[tools]
-clang-format = "latest"
-cmake = "3"
-"conda:cxx-compiler" = "latest"
-ninja = "latest"
-"pipx:gcovr" = "latest"
+[env]
+ZEPHYR_SDK_TOOLCHAINS = "x86_64-zephyr-elf"
+ZEPHYR_TOOLCHAIN_VARIANT = "zephyr"
+_.source = { path = ".mise/env/env.sh", tools = true }
 
-# ── Preset-based tasks (preferred) ───────────────────────────────────────
-# Tasks use the CMakePresets.json file. Available preset names:
-#   configure/build/test : debug, release
-#   configure/build      : debug-examples, release-examples
+[tools]
+cmake = "3"
+ninja = "latest"
+uv = "0.11.6"
+clang-format = "22.1.4"
+"pipx:west" = { version = "1.5.0", uvx_args = "--with jsonschema --with pyelftools --with intelhex --with natsort --with junitparser --with tabulate --with pytest --with ply --with psutil --with python-dotenv --with pyserial --with anytree --with pyyaml --with pylink-square --with toml --with packaging --with click --with cbor2 --with cryptography"}
+"pipx:gcovr" = "8.6"
+"conda:cxx-compiler" = "latest"
+
+# The Zephyr SDK.
+# (https://mise.en.dev/dev-tools/backends/github.html#platform-specific-asset-patterns).
+[tools."github:zephyrproject-rtos/sdk-ng"]
+version = "0.17.4"
+postinstall = "bash {{config_root}}/.mise/postinstalls/zephyr-sdk.sh"
+[tools."github:zephyrproject-rtos/sdk-ng".platforms]
+linux-x64    = { asset_pattern = "zephyr-sdk-*_linux-x86_64_minimal.tar.xz" }
+linux-arm64  = { asset_pattern = "zephyr-sdk-*_linux-aarch64_minimal.tar.xz" }
+macos-x64    = { asset_pattern = "zephyr-sdk-*_macos-x86_64_minimal.tar.xz" }
+macos-arm64  = { asset_pattern = "zephyr-sdk-*_macos-aarch64_minimal.tar.xz" }
 
 [tasks.configure-debug]
 description = "Configure a Debug build with tests (preset: debug)"
@@ -38,7 +51,7 @@ description = "Run unit tests for the Release configuration"
 depends = ["build-release"]
 run = "ctest --preset release"
 
-# ── Example tasks ────────────────────────────────────────────────────────
+# ── Posix Examples ────────────────────────────────────────────────────────
 
 [tasks.example-build]
 description = "Build the led_actor example (debug + examples preset)"
@@ -51,15 +64,14 @@ run = "cmake --preset release-examples && cmake --build --preset release-example
 [tasks.run-example]
 description = "Run the led_actor example"
 depends = ["example-build"]
-run = "./build/debug-examples/led_actor_example"
+run = '''
+#!/bin/bash
+set -euo pipefail
 
-[tasks.run-example-release]
-description = "Run the release build of the led_actor example"
-depends = ["example-build-release"]
-run = "./build/release-examples/led_actor_example"
-
-# ── Backwards-compatible aliases (kept for existing CI / muscle memory) ─
-# These mirror the old raw-cmake invocations and default to debug+tests.
+LOG="$(mktemp)"
+stdbuf -oL -eL ./build/debug-examples/led_actor_example 2>&1 | tee "$LOG"
+grep -q '^done$' "$LOG"
+'''
 
 [tasks.configure]
 description = "Configure Debug build with tests (alias for configure-debug)"
@@ -94,6 +106,40 @@ gcovr \
   --exclude "build/" \
   --print-summary \
   --sonarqube "build/coverage/coverage.xml"
+'''
+
+# ---- Zephyr Integration ----
+
+[tasks.west-init]
+description = "Initialize Zephyr's west workspace"
+dir = "{{ config_root }}/examples/basic_zephyr"
+run = '''
+#!/bin/bash
+set -euo pipefail
+
+if [[ ! -d ../.west ]]; then
+  west init -l 
+fi
+
+west update
+'''
+
+[tasks.build-zephyr-example]
+description = "Build the Zephyr example"
+dir = "{{ config_root }}/examples/basic_zephyr"
+run = "west build -b native_sim/native/64 . -d build -p always"
+
+[tasks.run-zephyr-example]
+description = "Run the Zephyr example"
+depends = ["build-zephyr-example"]
+dir = "{{ config_root }}/examples/basic_zephyr"
+run = '''
+#!/bin/bash
+set -euo pipefail
+
+LOG="$(mktemp)"
+west build -t run -d build 2>&1 | tee "$LOG"
+grep -q '^zephyr-basic OK$' "$LOG"
 '''
 
 # ── Formatting ────────────────────────────────────────────────────────────

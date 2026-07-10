@@ -178,18 +178,27 @@ void ipc_port_table_unlock(void)
 
 int ipc_port_actor_init(struct ipc_actor *a)
 {
-    (void) a;
-    return 0;
-}
-
-int ipc_port_start(struct ipc_actor *a)
-{
+    /* The actor is fully brought up here (per the new model where
+     * ipc_actor_init spawns the thread). The mock port's notion of
+     * "started" is just "actor_init was called and returned 0" —
+     * increment start_count so unit tests still have a hook to
+     * verify each actor was initialised exactly once. */
     mock_actor_state_t *s = mock_port_actor_state(a);
     s->start_count++;
     if (g_mock.next_start_should_fail == a) {
         g_mock.next_start_should_fail = NULL;
         return -EINVAL;
     }
+    return 0;
+}
+
+int ipc_port_start(struct ipc_actor *a)
+{
+    /* The actor thread is spawned in ipc_port_actor_init on real
+     * platforms. The mock's start_count is already incremented
+     * there; this hook is a no-op kept for port-interface
+     * compatibility. */
+    (void) a;
     return 0;
 }
 

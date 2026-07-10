@@ -1,15 +1,15 @@
 /*
  * ipc_config.h — Zephyr port overlay for IPC configuration.
  *
- * This file shadows include/ipc_defaults.h when building for Zephyr.
- * The Zephyr CMakeLists / module.yml adds src/port/zephyr to the include
- * path ahead of include/, so this header is found first by the library
- * build (but not by downstream consumers — they always see the public
- * include/ipc_defaults.h).
+ * src/port/zephyr/ipc_defaults.h shadows include/ipc_defaults.h when
+ * building for Zephyr, then includes this file to map Kconfig symbols.
+ * The Zephyr CMake glue adds src/port/zephyr to the include path ahead
+ * of include/, so both the library and application code see the same
+ * sizing values.
  *
  * Reads CONFIG_ACTOR_* symbols defined by the Kconfig file in this
  * directory.  Any symbol not set in Kconfig falls through to the
- * default in include/ipc_defaults.h (which we include at the bottom).
+ * default in include/ipc_defaults.h (which we include_next at the bottom).
  */
 #pragma once
 
@@ -52,4 +52,4 @@
 #endif
 
 /* Fall back to public defaults for anything Kconfig didn't define. */
-#include "ipc_defaults.h"
+#include_next "ipc_defaults.h"

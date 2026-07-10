@@ -18,11 +18,11 @@
  *
  *        gcc -DIPC_PAYLOAD_SIZE=64 ...
  *
- *   3. On Zephyr, set CONFIG_ACTOR_* in Kconfig.  The port-side overlay
- *      at src/port/zephyr/ipc_config.h reads Kconfig and defines the
- *      matching IPC_* macros, then #include's this file to fill in any
- *      symbol the Kconfig didn't set.  In a plain POSIX build this
- *      header is the only source of values.
+ *   3. On Zephyr, set CONFIG_ACTOR_* in Kconfig.  <ipc.h> includes the
+ *      port-side ipc_config.h, which maps Kconfig values to IPC_* macros,
+ *      then #include_next's this file to fill in any symbol the Kconfig
+ *      didn't set.  In a plain POSIX build this header is the only source
+ *      of values.
  *
  * ── Tuning table (defaults shown) ──────────────────────────────────────
  *

@@ -28,11 +28,17 @@ ipc/
 │       ├── posix/posix_ipc_port.c
 │       └── zephyr/
 │           ├── zephyr_ipc_port.c
-│           ├── ipc_config.h     ← Kconfig-aware overlay (build-time only)
+│           ├── ipc_defaults.h   ← Zephyr Kconfig-aware defaults wrapper
+│           ├── ipc_config.h     ← CONFIG_ACTOR_* → IPC_* mapping
 │           └── Kconfig
-├── tests/unit/            ← gtest; links ipc.c + mock_ipc_port (no threads)
+├── tests/
+│   ├── unit/              ← gtest; links ipc.c + mock_ipc_port (no threads)
+│   └── (future test work)
 ├── docs/                  ← design notes (timer wheel, future topics)
-├── examples/led_actor/    ← LED + app + button actors (POSIX runnable)
+├── examples/
+│   ├── led_actor/         ← LED + app + button actors (POSIX runnable)
+│   └── basic_zephyr/      ← minimal native_sim-friendly Zephyr app
+├── zephyr/                ← Zephyr module manifest, Kconfig, CMake glue
 ├── cmake/GTest.cmake      ← FetchContent-pinned googletest v1.15.2
 ├── CMakeLists.txt         ← top-level build (option-gated tests/examples)
 ├── CMakePresets.json
@@ -193,18 +199,24 @@ int main(void) {
     led_actor_init();
     app_actor_init();
     button_actor_init();
-
-    ipc_start_all_threads();   /* spawns one pthread per actor  */
+    /* ipc_actor_init has already spawned each actor's pthread. */
     /* ... do work, then ... */
-    ipc_stop_all();            /* joins all threads              */
+    ipc_stop_all();            /* signal all threads to exit */
+    ipc_run_all();             /* block in pthread_join until done */
     return 0;
 }
 ```
 
 Zephyr: actor `*_init` functions are called via `SYS_INIT(...,
-APPLICATION, 85)`. The framework's own `SYS_INIT(..., APPLICATION,
-90)` starts the actor threads after registration completes. No
-`ipc_run_all()` is needed — Zephyr's idle thread is your main loop.
+APPLICATION, 85)`. `ipc_actor_init` itself spawns each actor's
+`k_thread` (via the Zephyr port's `ipc_port_actor_init` hook), so
+by the time the kernel reaches `main()` every actor is already
+scheduled and polling its k_msgq. `main()` does not need to call
+`ipc_run_all()` or otherwise keep the kernel alive — it can just
+print a banner and return. The sample's
+[`examples/basic_zephyr/`](examples/basic_zephyr/) is structured this
+way; its `main.c` only prints a banner while the actor is initialized
+from `SYS_INIT`.
 
 See `examples/led_actor/main.c` for a complete POSIX runnable.
 
@@ -279,16 +291,33 @@ etc. (see `src/port/zephyr/Kconfig`). The Zephyr port's
 `ipc_config.h` overlay maps Kconfig values to the `IPC_*` macros that
 `<ipc.h>` consumes.
 
+The repo ships a runnable Zephyr sample app at
+[`examples/basic_zephyr/`](examples/basic_zephyr/) that links this
+framework as a Zephyr module. It defines one actor, registers a
+`BasicPing` command, sends the initial command from `SYS_INIT`, and
+then re-arms itself with `ipc_send_after()` a few times. The sample has
+its own `west.yml`, so it can create a local Zephyr workspace under
+`examples/` directly from this checkout:
+
+```bash
+mise exec -- west init -l examples/basic_zephyr
+cd examples
+mise exec -- west update
+mise exec -- west build -b native_sim basic_zephyr -d basic_zephyr/build -p always
+mise exec -- west build -t run -d basic_zephyr/build
+```
+
 ## Distribution / consumption paths
 
 This repo is designed to be consumed in three ways:
 
-1. **Zephyr module** — installed as `modules/ipc/`. The module's
-   `include/` is automatically added to the app's include path by
-   Zephyr's build system. The Zephyr overlay header
-   (`src/port/zephyr/ipc_config.h`) is only on the library's
-   *private* include path, so consumers always see the public
-   `include/ipc_defaults.h`.
+1. **Zephyr module** — the `zephyr/module.yml` declares
+   `build.cmake: zephyr` and `build.kconfig: zephyr/Kconfig`. Mount
+   the repo at `modules/ipc/` in a Zephyr workspace or list it in
+   `ZEPHYR_EXTRA_MODULES` and west picks it up automatically. The
+   app include path gets both `src/port/zephyr/` and `include/`, so
+   `<ipc.h>` can include the Kconfig-aware `ipc_config.h` and all
+   translation units agree on the same `IPC_*` sizing values.
 2. **CMake `add_subdirectory` / `FetchContent`** — `target_link_libraries(my_app PRIVATE ipc)`
    gives you the public include dir transitively. The default platform
    is POSIX; the Zephyr port is only compiled when `IPC_PLATFORM=zephyr`.
@@ -307,8 +336,8 @@ under `src/` is implementation detail and not exported to consumers.
   reference to the target actor.
 - **Lazy ID init** — message descriptor `.id` is FNV-1a-hashed from
   `.name` on first register/subscribe/send. All registration happens
-  single-threaded before `ipc_start_all_threads` (POSIX) or
-  `ipc_run_all` (Zephyr).
+  single-threaded during `ipc_actor_init` (which is the only place
+  threads are spawned too, on both POSIX and Zephyr).
 - **One delayed message per actor** — `ipc_send_after` replaces the
   previous pending delayed msg. The current implementation uses a
   per-actor delay primitive (POSIX: one helper `pthread` per actor;

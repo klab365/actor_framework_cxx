@@ -3,3 +3,25 @@ build-*/
 _deps/
 .cache/
 compile_commands.json
+.west
+.west/
+zephyr/*
+!zephyr/module.yml
+!zephyr/CMakeLists.txt
+!zephyr/Kconfig
+
+# Zephyr workspace artifacts, if someone initializes a west workspace
+# inside this repository while experimenting with the sample app.
+examples/.west
+examples/.venv
+examples/modules
+examples/staging
+examples/zephyr
+examples/zephyr/**
+
+# Zephyr sample build output (created by `west build`).
+examples/basic_zephyr/build
+
+# venv created by the CI workflow to install west outside the cached
+# workspace.
+.venv

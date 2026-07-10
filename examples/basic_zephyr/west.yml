@@ -1,0 +1,15 @@
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v3.7.0
+
+      # Still load Zephyr's west extension commands, including `west build`.
+      west-commands: scripts/west-commands.yml
+
+  self:
+    path: basic_zephyr

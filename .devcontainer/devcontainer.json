@@ -1,8 +1,9 @@
 {
   "name": "devcontainer: actor_framework_cxx",
-  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
   "features": {
-    "ghcr.io/devcontainers-extra/features/mise:1": {}
+    "ghcr.io/devcontainers-extra/features/mise:1": {},
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.0": {}
   },
   "customizations": {
     "vscode": {
