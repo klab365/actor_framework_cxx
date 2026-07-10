@@ -27,7 +27,11 @@ typedef uint32_t ipc_timeout_t;
  * macros before the public defaults are consulted.  See the docstring
  * at the top of ipc_defaults.h for the full override precedence list.
  */
+#ifdef __ZEPHYR__
+#include "ipc_config.h"
+#else
 #include "ipc_defaults.h"
+#endif
 
 /* ── Message kinds ──────────────────────────────────────────────────────── */
 
@@ -41,7 +45,8 @@ typedef enum {
  *
  * NOTE: NOT const — the .id field is zero-initialized in the macro and
  * computed lazily from .name (FNV-1a) on first register/subscribe/send.
- * All registration happens single-threaded before ipc_run_all().
+ * All registration happens single-threaded during the module's
+ * ipc_actor_init() call (which also spawns the actor's thread).
  * ─────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -57,39 +62,53 @@ struct ipc_actor;
 /* ── Wire message ──────────────────────────────────────────────────────── */
 
 struct ipc_msg {
+    /** Message ID */
     uint32_t id;
+    /** Message kind */
     ipc_msg_kind_t kind;
+    /** Message payload */
     uint8_t payload[IPC_PAYLOAD_SIZE];
-    void *_wait; /* internal (QUERY only) */
+    /** Internal use (QUERY only) */
+    void *_wait;
 };
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
 
 struct ipc_actor_cfg {
+    /** Stack size for the actor's thread */
     size_t stack_size;
+
+    /* Priority for the actor's thread */
     int priority;
+
+    /** Depth of the actor's message queue */
     size_t queue_depth;
 };
 
+/**
+ * IPC actor handler function type.
+ */
 typedef void (*ipc_actor_handler_t)(struct ipc_actor *self, const struct ipc_msg *msg);
 
 typedef struct {
+    /* Opaque platform-specific state for the actor's port implementation. */
     uintptr_t _opaque[IPC_PORT_STATE_WORDS];
 } ipc_port_state_t;
 
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
 
 struct ipc_actor {
+    /** Actor name (for logging) */
     const char *name;
+    /** Actor message handler */
     ipc_actor_handler_t handler;
+    /** Stack size, priority, queue depth */
     struct ipc_actor_cfg cfg;
-    ipc_port_state_t port; /* opaque platform state */
+    /** Opaque platform state */
+    ipc_port_state_t port;
+    /** Linked list of all actors, for ipc_start_all_threads() */
     struct ipc_actor *_next;
 };
-
-/* ── Runtime FNV-1a hash lives in ipc_internal.h — descriptor IDs are
- *    computed lazily by ipc_register/ipc_subscribe on first use; users
- *    never need to call this directly. ─────────────────────────────────────── */
 
 /* ── Message definition macros ──────────────────────────────────────────── */
 
@@ -220,15 +239,25 @@ struct ipc_actor {
 
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 
+/** Send raw messages */
 int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload);
+
+/** Send a message after a delay */
 int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payload);
+
+/** Publish a message to all subscribed actors */
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
+
+/** Query an actor and wait for a response */
 int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload, void *response, size_t resp_size,
                   ipc_timeout_t timeout);
+
+/** Reply to a query */
 void ipc_reply_raw(const struct ipc_msg *msg, const void *response, size_t len);
 
 /* ── Registration API ───────────────────────────────────────────────────── */
 
+/** Register an actor to handle a specific message descriptor. */
 int ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /*
@@ -258,10 +287,35 @@ int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /* ── Actor lifecycle ────────────────────────────────────────────────────── */
 
+/** Initialize an actor */
 int ipc_actor_init(struct ipc_actor *actor, const char *name, ipc_actor_handler_t handler,
                    struct ipc_actor_cfg cfg);
+
+/** Start all actor threads */
 int ipc_start_all_threads(void);
+
+/*
+ * Block until every actor has exited. On POSIX this is the join phase
+ * — ipc_stop_all() signals each actor's thread to exit and returns
+ * immediately; ipc_run_all() then joins them so the program doesn't
+ * fall out of main() and kill still-running pthreads. On Zephyr the
+ * kernel keeps scheduling until the app calls exit() (or the last
+ * thread returns), so ipc_run_all() is a no-op there — it just
+ * returns 0 without joining.
+ *
+ * Calling ipc_run_all() without first calling ipc_stop_all() will
+ * block forever on POSIX; that's intentional — it gives the caller
+ * a single, well-defined "I am done, let the framework clean up"
+ * point. If you want a "stop the world and clean up" sequence, call
+ * ipc_stop_all() then ipc_run_all(). If you want a manual "I've
+ * already signalled shutdown, just wait for threads to drain" flow,
+ * you can call ipc_run_all() directly — but you must have first
+ * arranged for each actor's thread to exit (typically by sending
+ * a SHUTDOWN command that the actor's handler turns into a return).
+ */
 int ipc_run_all(void);
+
+/** Stop all actor threads */
 void ipc_stop_all(void);
 
 #ifdef __cplusplus

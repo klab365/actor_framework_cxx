@@ -1,10 +1,9 @@
 # Copyright (c) 2026 IPC Actor Framework contributors
 # SPDX-License-Identifier: Apache-2.0
 
-mainmenu "IPC Actor Framework"
-
 menuconfig ACTOR
 	bool "IPC Actor Framework"
+	select POLL
 	help
 	  Lightweight active-object framework for embedded targets.
 	  Enable to include the actor runtime, message dispatch, and
@@ -48,5 +47,32 @@ config ACTOR_QUERY_WAIT_WORDS
 	help
 	  Opaque blob stack-allocated by ipc_query_raw.  Must be large
 	  enough to hold struct ipc_query_wait_impl from the Zephyr port.
+
+config ACTOR_MAX_ACTORS
+	int "Maximum number of actors (Zephyr port pool size)"
+	default 16
+	range 1 256
+	help
+	  Bounds the Zephyr port's per-actor resource pool.  The port
+	  pre-allocates this many msgq buffers and k_thread stacks at
+	  compile time. Each successful ipc_actor_init() claims one
+	  slot; if all are in use, init returns -ENOMEM.
+
+config ACTOR_MAX_STACK_SIZE
+	int "Maximum per-actor stack size in bytes (Zephyr port)"
+	default 1024
+	help
+	  Each pool slot is sized to this many bytes for the actor's
+	  k_thread stack. Actors requesting more than this will fail
+	  to init with -ENOMEM. Must be a multiple of 8 (the minimum
+	  Zephyr stack alignment).
+
+config ACTOR_MAX_QUEUE_DEPTH
+	int "Maximum per-actor msgq queue depth (Zephyr port)"
+	default 8
+	help
+	  Each pool slot is sized to hold this many struct ipc_msg
+	  entries in its k_msgq. Actors requesting more than this
+	  will fail to init with -ENOMEM.
 
 endif # ACTOR

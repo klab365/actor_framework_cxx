@@ -60,12 +60,13 @@ static struct ipc_actor app_actor;
 
 int app_actor_module_init(void)
 {
-    ipc_actor_init(&app_actor, "app", app_handler,
-                   (struct ipc_actor_cfg) {
-                       .stack_size  = 1024,
-                       .priority    = 4,
-                       .queue_depth = 32,
-                   });
+    struct ipc_actor_cfg cfg = {
+        .stack_size  = 1024,
+        .priority    = 4,
+        .queue_depth = 32,
+    };
+
+    ipc_actor_init(&app_actor, "app", app_handler, cfg);
 
     IPC_SUBSCRIBE(&app_actor, LedFault);
     IPC_SUBSCRIBE(&app_actor, ButtonClick);

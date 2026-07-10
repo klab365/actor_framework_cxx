@@ -19,7 +19,6 @@
 int ipc_port_start(struct ipc_actor *a);
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
-int ipc_port_run_all(void);
 void ipc_port_stop_actor(struct ipc_actor *a);
 
 /* ── Global actor registry (singly-linked list) ──────────────────────────── */
@@ -102,8 +101,9 @@ void _ipc_reset_for_testing(void)
 
 /*
  * Ensure the descriptor's .id is populated from .name (FNV-1a).
- * Called unconditionally at every API entry point — safe because init
- * always completes before ipc_run_all() starts any threads.
+ * Called unconditionally at every API entry point — safe because
+ * ID init is idempotent (the .id field is 0 only on the first
+ * call for that descriptor).
  */
 static void _ipc_ensure_id(ipc_msg_desc_t *d)
 {
@@ -423,7 +423,7 @@ void ipc_reply_raw(const struct ipc_msg *msg, const void *response, size_t len)
     ipc_port_table_unlock();
 }
 
-/* ── ipc_run_all / ipc_stop_all ──────────────────────────────────────────── */
+/* ── ipc_start_all_threads / ipc_run_all / ipc_stop_all ─────────────────── */
 
 int ipc_start_all_threads(void)
 {
@@ -440,10 +440,10 @@ int ipc_start_all_threads(void)
 
 int ipc_run_all(void)
 {
-    int rc = ipc_start_all_threads();
-    if (rc) {
-        return rc;
-    }
+    /* On POSIX the port walks the actor list and pthread_joins each
+     * thread, blocking here until they've all exited. On Zephyr the
+     * port is a no-op (the kernel keeps scheduling) and we return
+     * without joining. See ipc_port_run_all in each backend. */
     return ipc_port_run_all();
 }
 

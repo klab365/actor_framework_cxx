@@ -96,7 +96,8 @@ void mock_port_set_next_start_should_fail(struct ipc_actor *a);
 void mock_port_set_invoke_handlers(bool enabled);
 
 /* Returned by ipc_port_run_all. Programmable so tests can simulate
- * "actor thread exited with error" without actually running a thread. */
+ * "ipc_run_all() blocked because the actor thread exited with an
+ * error" without actually running a thread. */
 void mock_port_set_run_all_rc(int rc);
 
 /* Snapshot of the most recent message passed to ipc_port_send for an actor. */

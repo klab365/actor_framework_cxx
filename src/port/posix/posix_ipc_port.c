@@ -50,6 +50,7 @@ struct ipc_port_state {
     size_t count;
 
     bool running;
+    bool joined;
 
     /* Delayed send: single pending delayed message per actor */
     pthread_t delay_thread;
@@ -189,8 +190,33 @@ int ipc_port_actor_init(struct ipc_actor *a)
 {
     /* Lazy: pthread_once ensures table_mutex is set up before first lock. */
     pthread_once(&table_once, table_mutex_init_once);
-    (void) a;
-    return 0;
+
+    struct ipc_port_state *p = port_of(a);
+    size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
+
+    p->ring                  = (struct ipc_msg *) calloc(cap, sizeof(struct ipc_msg));
+    if (!p->ring) {
+        return -ENOMEM;
+    }
+
+    p->capacity = cap;
+    p->head = p->tail = p->count = 0;
+    p->running                   = true;
+    p->joined                    = false;
+    p->delay_active              = false;
+    p->delay_cancel              = false;
+
+    pthread_mutex_init(&p->lock, NULL);
+    pthread_cond_init(&p->cond, NULL);
+    pthread_mutex_init(&p->delay_lock, NULL);
+    pthread_cond_init(&p->delay_cond, NULL);
+
+    /* The actor's thread is spawned here, in ipc_actor_init. By the
+     * time the caller of ipc_actor_init returns, the actor is
+     * scheduled and polling its queue. This is what lets the
+     * Zephyr sample wire each module with its own SYS_INIT and
+     * leave main() empty. */
+    return pthread_create(&p->thread, NULL, ipc_thread_fn, a);
 }
 
 /* ── Delayed send thread ─────────────────────────────────────────────────── */
@@ -239,26 +265,12 @@ static void *delay_thread_fn(void *arg)
 
 int ipc_port_start(struct ipc_actor *a)
 {
-    struct ipc_port_state *p = port_of(a);
-    size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
-
-    p->ring                  = (struct ipc_msg *) calloc(cap, sizeof(struct ipc_msg));
-    if (!p->ring) {
-        return -ENOMEM;
-    }
-
-    p->capacity = cap;
-    p->head = p->tail = p->count = 0;
-    p->running                   = true;
-    p->delay_active              = false;
-    p->delay_cancel              = false;
-
-    pthread_mutex_init(&p->lock, NULL);
-    pthread_cond_init(&p->cond, NULL);
-    pthread_mutex_init(&p->delay_lock, NULL);
-    pthread_cond_init(&p->delay_cond, NULL);
-
-    return pthread_create(&p->thread, NULL, ipc_thread_fn, a);
+    /* Actor thread is already spawned in ipc_port_actor_init.
+     * This hook is kept for port-interface compatibility but
+     * performs no work on POSIX — the actor is live the moment
+     * ipc_actor_init returns. */
+    (void) a;
+    return 0;
 }
 
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
@@ -315,11 +327,36 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
     return rc == 0 ? 0 : -ENOMEM;
 }
 
+static void cleanup_actor(struct ipc_actor *a)
+{
+    struct ipc_port_state *p = port_of(a);
+
+    pthread_mutex_destroy(&p->lock);
+    pthread_cond_destroy(&p->cond);
+    pthread_mutex_destroy(&p->delay_lock);
+    pthread_cond_destroy(&p->delay_cond);
+
+    free(p->ring);
+    p->ring = NULL;
+}
+
 int ipc_port_run_all(void)
 {
+    /*
+     * Block in pthread_join until every actor thread has exited. The
+     * caller is expected to have already called ipc_stop_all() to
+     * signal the threads to exit (ipc_port_stop_actor sets
+     * p->running = false and broadcasts). Note: on Zephyr this is a
+     * no-op — see zephyr_ipc_port.c.
+     */
     struct ipc_actor *a = _ipc_actor_list;
     while (a) {
-        pthread_join(port_of(a)->thread, NULL);
+        struct ipc_port_state *p = port_of(a);
+        if (!p->joined) {
+            pthread_join(p->thread, NULL);
+            p->joined = true;
+            cleanup_actor(a);
+        }
         a = a->_next;
     }
     return 0;
@@ -329,7 +366,9 @@ void ipc_port_stop_actor(struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
 
-    /* Cancel delay thread if active */
+    /* Cancel delay thread if active. The delayed-send helper owns a
+     * separate pthread; join it here so no helper can enqueue more work
+     * after the actor has been asked to stop. */
     pthread_mutex_lock(&p->delay_lock);
     if (p->delay_active) {
         p->delay_cancel = true;
@@ -337,6 +376,8 @@ void ipc_port_stop_actor(struct ipc_actor *a)
         pthread_mutex_unlock(&p->delay_lock);
         pthread_join(p->delay_thread, NULL);
         pthread_mutex_lock(&p->delay_lock);
+        p->delay_cancel = false;
+        p->delay_active = false;
     }
     pthread_mutex_unlock(&p->delay_lock);
 
@@ -344,14 +385,4 @@ void ipc_port_stop_actor(struct ipc_actor *a)
     p->running = false;
     pthread_cond_broadcast(&p->cond);
     pthread_mutex_unlock(&p->lock);
-
-    pthread_join(p->thread, NULL);
-
-    pthread_mutex_destroy(&p->lock);
-    pthread_cond_destroy(&p->cond);
-    pthread_mutex_destroy(&p->delay_lock);
-    pthread_cond_destroy(&p->delay_cond);
-
-    free(p->ring);
-    p->ring = NULL;
 }

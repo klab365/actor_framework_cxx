@@ -62,15 +62,17 @@ endif()
 
 if(IPC_PLATFORM STREQUAL "zephyr")
     target_sources(ipc PRIVATE src/port/zephyr/zephyr_ipc_port.c)
-    # Zephyr port's ipc_config.h (CONFIG_ACTOR_* aware) shadows the public
-    # include/ipc_defaults.h.  Listed FIRST so it wins in
-    # #include "ipc_defaults.h" resolution when compiling the library.
-    # (Downstream consumers don't see this path — they always get the
-    # public defaults file via the PUBLIC include directory above.)
-    target_include_directories(ipc PRIVATE
+    # Zephyr port private headers (ipc_config.h and ipc_port.h) are needed
+    # when compiling the Zephyr implementation.
+    target_include_directories(ipc SYSTEM BEFORE PRIVATE
         src/port/zephyr
         src
     )
+    # The Zephyr port manages each actor's msgq buffer and k_thread
+    # stack internally (a static pool keyed on CONFIG_ACTOR_MAX_ACTORS,
+    # see zephyr_ipc_port.c).  Consumers don't need to supply them,
+    # and nothing under src/port/zephyr/ is exposed as PUBLIC: the
+    # public surface is just <ipc.h> + <ipc_defaults.h>.
 else()
     target_sources(ipc PRIVATE src/port/posix/posix_ipc_port.c)
     target_include_directories(ipc PRIVATE src)
@@ -96,6 +98,10 @@ endif()
 # ── Examples ───────────────────────────────────────────────────────────────
 
 if(IPC_BUILD_EXAMPLES)
+    # POSIX example (host). The Zephyr example
+    # (examples/zephyr_measurement/) is built via `west build` against
+    # a Zephyr toolchain and exercised by the zephyr-integration CI
+    # job; it is intentionally not wired into the host build below.
     add_executable(led_actor_example
         examples/led_actor/main.c
         examples/led_actor/led_actor.c

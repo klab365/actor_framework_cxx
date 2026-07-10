@@ -2,7 +2,18 @@
  * zephyr_ipc_port.c — Zephyr implementation of the generic ipc_port interface.
  *
  * k_msgq + k_poll_signal + k_work_delayable + k_thread.
- * The actor's msgq buffer and thread stack must be supplied by the caller
+ *
+ * The port owns each actor's per-thread resources (k_msgq buffer and
+ * k_thread stack) via a static pool sized at build time.  Users do
+ * NOT supply these resources — they only set the *size* of each
+ * actor's resources in struct ipc_actor_cfg, and ipc_port_actor_init
+ * carves a slot from the pool.  The pool is bounded by Kconfig:
+ *   CONFIG_ACTOR_MAX_ACTORS        number of slots
+ *   CONFIG_ACTOR_MAX_STACK_SIZE    per-slot stack bytes
+ *   CONFIG_ACTOR_MAX_QUEUE_DEPTH   per-slot msgq capacity
+ *
+ * This keeps <ipc.h> free of platform-specific fields and means the
+ * Zephyr port doesn't need a public helper header.
  */
 #include "ipc.h"
 #include "ipc_port.h"
@@ -10,8 +21,6 @@
 #include <errno.h>
 #include <string.h>
 #include <zephyr/kernel.h>
-
-extern struct ipc_actor *_ipc_actor_list;
 
 /* ── Table mutex ─────────────────────────────────────────────────────────── */
 
@@ -40,13 +49,13 @@ void ipc_port_table_unlock(void)
 
 struct ipc_port_state {
     struct k_msgq msgq;
-    uint8_t *msgq_buf; /* assigned by caller via init helper */
     struct k_poll_signal signal;
     struct k_thread thread;
-    k_thread_stack_t *stack;
+    k_thread_stack_t *stack; /* points into zephyr_stk_pool */
     struct k_work_delayable delayed_work;
     struct ipc_msg delayed_msg;
     struct ipc_actor *owner;
+    int pool_slot; /* index into the static pool, -1 if unallocated */
 };
 
 _Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
@@ -55,6 +64,58 @@ _Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
 static struct ipc_port_state *port_of(struct ipc_actor *a)
 {
     return (struct ipc_port_state *) (void *) &a->port;
+}
+
+/* ── Static resource pool ────────────────────────────────────────────────
+ *
+ * One pool backs all actors. Each ipc_port_actor_init() carves a
+ * (msgq buffer, k_thread stack) pair from the pool. The pool slot
+ * count and per-slot sizes are fixed at build time via Kconfig.
+ *
+ * The pool is sized for the *worst case*: every slot gets the same
+ * max stack and max msgq. An actor that asks for more than the max
+ * fails to init with -ENOMEM.
+ */
+#define POOL_N_ACTORS CONFIG_ACTOR_MAX_ACTORS
+#define POOL_SLOT_STACK_SIZE CONFIG_ACTOR_MAX_STACK_SIZE
+#define POOL_SLOT_MSGQ_DEPTH CONFIG_ACTOR_MAX_QUEUE_DEPTH
+#define POOL_SLOT_MSGQ_BYTES ((size_t) POOL_SLOT_MSGQ_DEPTH * sizeof(struct ipc_msg))
+
+/* One big aligned block for all stacks. Sliced at compile-time
+ * multiples of POOL_SLOT_STACK_SIZE — Z_THREAD_STACK_ALIGNMENT is
+ * always <= 8 bytes and POOL_SLOT_STACK_SIZE is a multiple of 8 by
+ * default, so each slice is properly aligned for k_thread_create. */
+K_THREAD_STACK_DEFINE(zephyr_stk_pool, POOL_N_ACTORS *POOL_SLOT_STACK_SIZE);
+static uint8_t zephyr_msgq_pool[POOL_N_ACTORS][POOL_SLOT_MSGQ_BYTES];
+static bool zephyr_pool_used[POOL_N_ACTORS];
+
+static k_thread_stack_t *pool_stack(int slot)
+{
+    return (k_thread_stack_t *) ((uint8_t *) &zephyr_stk_pool[0] +
+                                 (size_t) slot * POOL_SLOT_STACK_SIZE);
+}
+
+static int pool_claim(struct ipc_port_state *p, size_t stack_size, size_t queue_depth)
+{
+    if (stack_size > POOL_SLOT_STACK_SIZE || queue_depth > POOL_SLOT_MSGQ_DEPTH) {
+        return -ENOMEM;
+    }
+    for (int i = 0; i < POOL_N_ACTORS; i++) {
+        if (!zephyr_pool_used[i]) {
+            zephyr_pool_used[i] = true;
+            p->pool_slot        = i;
+            return i;
+        }
+    }
+    return -ENOMEM;
+}
+
+static void pool_release(struct ipc_port_state *p)
+{
+    if (p->pool_slot >= 0) {
+        zephyr_pool_used[p->pool_slot] = false;
+        p->pool_slot                   = -1;
+    }
 }
 
 /* ── Query-wait impl (response bytes at IPC_QUERY_RESPONSE_OFFSET) ──────── */
@@ -154,23 +215,31 @@ static void delayed_work_fn(struct k_work *work)
 
 int ipc_port_actor_init(struct ipc_actor *a)
 {
-    /* On Zephyr, msgq_buf and stack must be wired before ipc_port_start.
-     * See TODO in README about ipc_actor_init_zephyr helper. */
     table_init_once();
-    (void) a;
-    return 0;
-}
 
-int ipc_port_start(struct ipc_actor *a)
-{
     struct ipc_port_state *p = port_of(a);
-    size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
+    /* Defensive: the port state lives in the actor's opaque blob and
+     * is unitialised at first use. Make sure pool_slot starts at -1
+     * so a later stop without a successful init doesn't release an
+     * unowned slot. */
+    p->pool_slot             = -1;
+    p->stack                 = NULL;
 
-    if (!p->msgq_buf || !p->stack) {
-        return -EINVAL;
+    size_t stack_size        = a->cfg.stack_size > 0 ? a->cfg.stack_size : 1024;
+    size_t queue_depth       = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
+
+    int slot                 = pool_claim(p, stack_size, queue_depth);
+    if (slot < 0) {
+        return slot;
     }
+    p->stack = pool_stack(slot);
 
-    k_msgq_init(&p->msgq, (char *) p->msgq_buf, sizeof(struct ipc_msg), cap);
+    /* The actor is fully initialised and its thread is now live.
+     * Spawning inside ipc_actor_init is what lets the Zephyr sample
+     * wire each module with its own SYS_INIT and leave main() empty:
+     * by the time SYS_INIT returns, the actor is scheduled and
+     * polling its msgq. */
+    k_msgq_init(&p->msgq, (char *) zephyr_msgq_pool[slot], sizeof(struct ipc_msg), queue_depth);
     k_poll_signal_init(&p->signal);
     p->owner = a;
     k_work_init_delayable(&p->delayed_work, delayed_work_fn);
@@ -178,6 +247,16 @@ int ipc_port_start(struct ipc_actor *a)
     k_thread_create(&p->thread, p->stack, a->cfg.stack_size, ipc_thread_fn, a, NULL, NULL,
                     a->cfg.priority, 0, K_NO_WAIT);
     k_thread_name_set(&p->thread, a->name);
+    return 0;
+}
+
+int ipc_port_start(struct ipc_actor *a)
+{
+    /* Actor thread is already spawned in ipc_port_actor_init.
+     * This hook is kept for port-interface compatibility but
+     * performs no work on Zephyr — the actor is live the moment
+     * ipc_actor_init returns. */
+    (void) a;
     return 0;
 }
 
@@ -201,7 +280,16 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
 
 int ipc_port_run_all(void)
 {
-    /* Zephyr threads are already running (started via SYS_INIT). */
+    /*
+     * On Zephyr the actor's k_thread is spawned inside
+     * ipc_port_actor_init (called by ipc_actor_init during the
+     * module's own SYS_INIT). The kernel keeps scheduling those
+     * threads until the app calls exit() (or the last thread
+     * returns), so there is nothing to join here. ipc_run_all()
+     * is a no-op on Zephyr; calling it is still safe and gives a
+     * single portable "wait for shutdown" point for code that
+     * wants to be cross-platform.
+     */
     return 0;
 }
 
@@ -210,4 +298,5 @@ void ipc_port_stop_actor(struct ipc_actor *a)
     struct ipc_port_state *p = port_of(a);
     k_work_cancel_delayable(&p->delayed_work);
     k_thread_abort(&p->thread);
+    pool_release(p);
 }
