@@ -1,6 +1,5 @@
 /*
- * app_actor.c — Consumer actor: subscribes to LedFault events,
- *               sends cmds, and performs a query.
+ * app_actor.c — Consumer actor: subscribes to events and sends commands.
  */
 #include "button_actor.h"
 #include "led_actor.h"
@@ -13,6 +12,14 @@ IPC_HANDLE(LedFault, led_fault_handler)
     (void) self;
     printf("[app] LED fault ch=%u code=0x%x\n", msg->channel, msg->error_code);
     (void) raw_msg;
+}
+
+IPC_HANDLE(GetLedStateResponse, on_led_state)
+{
+    (void) self;
+    (void) raw_msg;
+    printf("[app] GetLedStateResponse ch=%u on=%u brightness=%u on_time_ms=%u\n", msg->channel,
+           msg->on, msg->brightness, msg->on_time_ms);
 }
 
 IPC_HANDLE(ButtonClick, on_click)
@@ -47,45 +54,35 @@ IPC_HANDLE(ButtonHold, on_hold)
 static void app_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 {
     IPC_DISPATCH_TO(msg, LedFault, led_fault_handler)
+    IPC_DISPATCH_TO(msg, GetLedStateResponse, on_led_state)
     IPC_DISPATCH_TO(msg, ButtonClick, on_click)
     IPC_DISPATCH_TO(msg, ButtonDoubleClick, on_double_click)
     IPC_DISPATCH_TO(msg, ButtonHold, on_hold)
-    { /* ignore */
-    }
+    IPC_DISPATCH_IGNORE_UNKNOWN();
 }
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-static struct ipc_actor app_actor;
+IPC_ACTOR_DEFINE(app_actor, "app", app_handler, 1024, 4, 32);
 
 int app_actor_module_init(void)
 {
-    struct ipc_actor_cfg cfg = {
-        .stack_size  = 1024,
-        .priority    = 4,
-        .queue_depth = 32,
-    };
-
-    ipc_actor_init(&app_actor, "app", app_handler, cfg);
-
-    IPC_SUBSCRIBE(&app_actor, LedFault);
-    IPC_SUBSCRIBE(&app_actor, ButtonClick);
-    IPC_SUBSCRIBE(&app_actor, ButtonDoubleClick);
-    IPC_SUBSCRIBE(&app_actor, ButtonHold);
+    ipc_register(&app_actor, &GetLedStateResponse);
+    ipc_subscribe(&app_actor, &LedFault);
+    ipc_subscribe(&app_actor, &ButtonClick);
+    ipc_subscribe(&app_actor, &ButtonDoubleClick);
+    ipc_subscribe(&app_actor, &ButtonHold);
     return 0;
 }
 
 void app_run(void)
 {
-    /* QUERY — blocks until led_actor replies or timeout */
-    GetLedState_response_t state;
-    GetLedState_payload_t req = {.channel = 0};
-    int rc                    = ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100), req);
-    if (rc == 0) {
-        printf("[app] GetLedState: on=%u brightness=%u on_time_ms=%u\n", state.on, state.brightness,
-               state.on_time_ms);
-    } else {
-        printf("[app] GetLedState failed: %d\n", rc);
+    /* Async request/response: ask LED actor for state, then handle
+     * GetLedStateResponse when it arrives in app_handler(). */
+    GetLedStateRequest_payload_t req = {.channel = 0};
+    int rc                           = ipc_send(GetLedStateRequest, req);
+    if (rc != 0) {
+        printf("[app] GetLedStateRequest failed: %d\n", rc);
     }
 
     /* EVENT — broadcast, no target */

@@ -128,25 +128,17 @@ static void button_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 {
     IPC_DISPATCH_TO(msg, ButtonTick, on_tick_msg)
     IPC_DISPATCH_TO(msg, LedFault, on_fault)
-    { /* unknown */
-    }
+    IPC_DISPATCH_IGNORE_UNKNOWN();
 }
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-static struct ipc_actor button_actor;
+IPC_ACTOR_DEFINE(button_actor, "button", button_handler, 1024, 5, 16);
 
 int button_actor_module_init(void)
 {
-    ipc_actor_init(&button_actor, "button", button_handler,
-                   (struct ipc_actor_cfg) {
-                       .stack_size  = 1024,
-                       .priority    = 5,
-                       .queue_depth = 16,
-                   });
-
-    IPC_REGISTER(&button_actor, ButtonTick);
-    IPC_SUBSCRIBE(&button_actor, LedFault);
+    ipc_register(&button_actor, &ButtonTick);
+    ipc_subscribe(&button_actor, &LedFault);
 
     return 0;
 }

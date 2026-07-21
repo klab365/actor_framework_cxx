@@ -12,7 +12,6 @@
 #include <errno.h>
 #include <pthread.h>
 #include <string.h>
-#include <time.h>
 
 /* ── Process-wide mock state ────────────────────────────────────────────── */
 
@@ -25,8 +24,6 @@ typedef struct {
     pthread_mutex_t lock; /* protects mock global state */
 
     /* Programmable behaviour */
-    bool block_query_timeout;
-    bool block_should_wait;
     bool send_should_fail;
     bool invoke_handlers;
     int run_all_rc;
@@ -57,8 +54,6 @@ void mock_port_reset(void)
     int n = g_mock.n_slots;
     memset(g_mock.slots, 0, sizeof(g_mock.slots));
     g_mock.n_slots                = n;
-    g_mock.block_query_timeout    = false;
-    g_mock.block_should_wait      = false;
     g_mock.send_should_fail       = false;
     g_mock.invoke_handlers        = false;
     g_mock.run_all_rc             = 0;
@@ -85,16 +80,6 @@ mock_actor_state_t *mock_port_actor_state(struct ipc_actor *a)
     s->actor              = a;
     pthread_mutex_unlock(&g_mock.lock);
     return s;
-}
-
-void mock_port_set_block_timeout(bool enabled)
-{
-    g_mock.block_query_timeout = enabled;
-}
-
-void mock_port_set_block_should_wait(bool enabled)
-{
-    g_mock.block_should_wait = enabled;
 }
 
 void mock_port_set_send_should_fail(bool enabled)
@@ -178,11 +163,10 @@ void ipc_port_table_unlock(void)
 
 int ipc_port_actor_init(struct ipc_actor *a)
 {
-    /* The actor is fully brought up here (per the new model where
-     * ipc_actor_init spawns the thread). The mock port's notion of
-     * "started" is just "actor_init was called and returned 0" —
-     * increment start_count so unit tests still have a hook to
-     * verify each actor was initialised exactly once. */
+    /* The actor is fully brought up here during ipc_start_all_actors().
+     * The mock port's notion of "started" is just "port actor init
+     * was called and returned 0" — increment start_count so unit tests
+     * can verify each actor was initialised exactly once. */
     mock_actor_state_t *s = mock_port_actor_state(a);
     s->start_count++;
     if (g_mock.next_start_should_fail == a) {
@@ -253,97 +237,4 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
 int ipc_port_run_all(void)
 {
     return g_mock.run_all_rc;
-}
-
-/* ── Query-wait ─────────────────────────────────────────────────────────── */
-
-/* Layout contract: see IPC_QUERY_RESPONSE_OFFSET / IPC_QUERY_RESPONSE_SIZE
- * in ipc_port.h. The response area must be the first
- * IPC_QUERY_RESPONSE_SIZE bytes of _opaque; bookkeeping for status/done
- * lives past the response area so the two regions never collide. */
-#define MOCK_QW_BODY_OFFSET IPC_QUERY_RESPONSE_SIZE
-
-struct mock_query_wait {
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
-    int status;
-    bool done;
-};
-
-static struct mock_query_wait *qw_of(ipc_query_wait_t *w)
-{
-    return (struct mock_query_wait *) ((uint8_t *) w->_opaque + MOCK_QW_BODY_OFFSET);
-}
-
-int ipc_port_query_wait_init(ipc_query_wait_t *w)
-{
-    struct mock_query_wait *m = qw_of(w);
-    pthread_mutex_init(&m->lock, NULL);
-    pthread_cond_init(&m->cond, NULL);
-    m->status = 0;
-    m->done   = false;
-    /* Zero the response area so reads see deterministic state. */
-    memset(w->_opaque, 0, IPC_QUERY_RESPONSE_SIZE);
-    return 0;
-}
-
-void ipc_port_query_wait_destroy(ipc_query_wait_t *w)
-{
-    struct mock_query_wait *m = qw_of(w);
-    pthread_cond_destroy(&m->cond);
-    pthread_mutex_destroy(&m->lock);
-}
-
-int ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout)
-{
-    struct mock_query_wait *m = qw_of(w);
-    if (g_mock.block_query_timeout) {
-        return -ETIMEDOUT;
-    }
-    if (!g_mock.block_should_wait) {
-        /* Legacy behaviour: synchronous check, no real wait. */
-        if (!m->done) {
-            return -ETIMEDOUT;
-        }
-        return m->status;
-    }
-    /* Real wait on the condvar. Translate the ipc_timeout_t (ms) into
-     * an absolute deadline so the timeout is honoured under load. */
-    pthread_mutex_lock(&m->lock);
-    if (!m->done) {
-        if (timeout == IPC_TIMEOUT_FOREVER) {
-            pthread_cond_wait(&m->cond, &m->lock);
-        } else {
-            struct timespec deadline;
-            clock_gettime(CLOCK_REALTIME, &deadline);
-            uint64_t ns = (uint64_t) timeout * 1000000ull;
-            deadline.tv_sec += (time_t) (ns / 1000000000ull);
-            deadline.tv_nsec += (long) (ns % 1000000000ull);
-            if (deadline.tv_nsec >= 1000000000L) {
-                deadline.tv_sec += 1;
-                deadline.tv_nsec -= 1000000000L;
-            }
-            int wrc = 0;
-            while (!m->done && wrc == 0) {
-                wrc = pthread_cond_timedwait(&m->cond, &m->lock, &deadline);
-            }
-            if (wrc == ETIMEDOUT && !m->done) {
-                pthread_mutex_unlock(&m->lock);
-                return -ETIMEDOUT;
-            }
-        }
-    }
-    int rc = m->status;
-    pthread_mutex_unlock(&m->lock);
-    return rc;
-}
-
-void ipc_port_query_wait_wake(ipc_query_wait_t *w)
-{
-    struct mock_query_wait *m = qw_of(w);
-    pthread_mutex_lock(&m->lock);
-    m->status = 0;
-    m->done   = true;
-    pthread_cond_signal(&m->cond);
-    pthread_mutex_unlock(&m->lock);
 }

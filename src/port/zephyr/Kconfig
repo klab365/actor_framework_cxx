@@ -15,64 +15,8 @@ config ACTOR_PAYLOAD_SIZE
 	int "Maximum IPC message payload size in bytes"
 	default 32
 	help
-	  Largest single-message payload the framework will carry.
-	  All IPC_*_DEFINE'd payloads must fit.  Larger values increase
-	  stack usage per query reply.
-
-config ACTOR_MAX_REGISTRATIONS
-	int "Maximum CMD/QUERY registrations"
-	default 32
-	help
-	  Number of unique CMD or QUERY message IDs that can be registered.
-	  Each registration consumes a small static entry.
-
-config ACTOR_MAX_SUBSCRIPTIONS
-	int "Maximum EVENT subscriptions"
-	default 32
-	help
-	  Number of (message ID, subscriber actor) pairs the framework
-	  can hold.  Each subscription is a small static entry.
-
-config ACTOR_PORT_STATE_WORDS
-	int "Per-actor opaque port state size (in words)"
-	default 64
-	help
-	  Opaque blob embedded in struct ipc_actor.  Must be large enough
-	  to hold struct ipc_port_state from the Zephyr port.  Reduce on
-	  memory-constrained targets.
-
-config ACTOR_QUERY_WAIT_WORDS
-	int "Stack-allocated query-wait blob size (in words)"
-	default 24
-	help
-	  Opaque blob stack-allocated by ipc_query_raw.  Must be large
-	  enough to hold struct ipc_query_wait_impl from the Zephyr port.
-
-config ACTOR_MAX_ACTORS
-	int "Maximum number of actors (Zephyr port pool size)"
-	default 16
-	range 1 256
-	help
-	  Bounds the Zephyr port's per-actor resource pool.  The port
-	  pre-allocates this many msgq buffers and k_thread stacks at
-	  compile time. Each successful ipc_actor_init() claims one
-	  slot; if all are in use, init returns -ENOMEM.
-
-config ACTOR_MAX_STACK_SIZE
-	int "Maximum per-actor stack size in bytes (Zephyr port)"
-	default 1024
-	help
-	  Each pool slot is sized to this many bytes for the actor's
-	  k_thread stack. Actors requesting more than this will fail
-	  to init with -ENOMEM. Must be a multiple of 8 (the minimum
-	  Zephyr stack alignment).
-
-config ACTOR_MAX_QUEUE_DEPTH
-	int "Maximum per-actor msgq queue depth (Zephyr port)"
-	default 8
-	help
-	  Each pool slot is sized to hold this many struct ipc_msg
-	  entries in its k_msgq. Actors requesting more than this
-	  will fail to init with -ENOMEM.
+	  Largest inline message payload the framework will carry.
+	  All IPC_*_DEFINE'd payloads must fit. Actor stacks and queues are
+	  declared per actor with IPC_ACTOR_DEFINE().
 
 endif # ACTOR

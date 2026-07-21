@@ -19,7 +19,7 @@ live behind a single port seam.
 ipc/
 ├── include/
 │   ├── ipc.h              ← ONLY public header (whole API surface)
-│   └── ipc_defaults.h     ← sizing defaults; tunable per-TU or via -D
+│   └── ipc_defaults.h     ← IPC_PAYLOAD_SIZE default; tunable per-TU or via -D
 ├── src/
 │   ├── ipc.c              ← platform-agnostic core
 │   ├── ipc_internal.h     ← private: FNV-1a, test reset hook
@@ -28,8 +28,8 @@ ipc/
 │       ├── posix/posix_ipc_port.c
 │       └── zephyr/
 │           ├── zephyr_ipc_port.c
-│           ├── ipc_defaults.h   ← Zephyr Kconfig-aware defaults wrapper
-│           ├── ipc_config.h     ← CONFIG_ACTOR_* → IPC_* mapping
+│           ├── ipc_defaults.h   ← Zephyr defaults wrapper
+│           ├── ipc_config.h     ← CONFIG_ACTOR_PAYLOAD_SIZE → IPC_PAYLOAD_SIZE
 │           └── Kconfig
 ├── tests/
 │   ├── unit/              ← gtest; links ipc.c + mock_ipc_port (no threads)
@@ -62,13 +62,16 @@ FNV-1a-hashed `.id`, set on first register/send) and a
 checks that `sizeof(LedOn_payload_t) <= IPC_PAYLOAD_SIZE` at compile
 time.
 
-The same pattern works for queries and events:
+The same pattern works for events. Request/response is modeled as two commands:
 
 ```c
-IPC_QUERY_DEFINE(GetLedState,
-    { uint8_t channel; },                      /* request fields */
-    { uint8_t on; uint8_t brightness;
-      uint32_t on_time_ms; });                 /* response fields */
+IPC_CMD_DEFINE(GetLedStateRequest, { uint8_t channel; });
+IPC_CMD_DEFINE(GetLedStateResponse, {
+    uint8_t channel;
+    uint8_t on;
+    uint8_t brightness;
+    uint32_t on_time_ms;
+});
 
 IPC_EVENT_DEFINE(LedFault, { uint32_t error_code; uint8_t channel; });
 ```
@@ -91,8 +94,6 @@ static void on_led_on(struct ipc_actor *self,
                       const struct ipc_msg *raw_msg);
 ```
 
-The `raw_msg` argument is what you pass to `ipc_reply()` for queries.
-
 ### 3. Wire the dispatch chain
 
 ```c
@@ -100,8 +101,8 @@ static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 {
     IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
     IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
-    IPC_DISPATCH_TO(msg, GetLedState, on_get_state)
-    { /* unknown id — ignore */ }
+    IPC_DISPATCH_TO(msg, GetLedStateRequest, on_get_state_request)
+    IPC_DISPATCH_IGNORE_UNKNOWN();
 }
 ```
 
@@ -120,21 +121,23 @@ shape is deliberate:
   any statement context (e.g. inside another `if`) without the
   classic dangling-else pitfall.
 
-Because the macro doesn't terminate with a `;`, the chain needs a
-final `else` clause. You can either:
+Because the macro doesn't terminate with a `;`, every chain must end
+with an explicit unknown-message terminator:
 
-- **Add a trailing block** to handle unmatched IDs (the form used
-  in this README and in `examples/led_actor/`):
+- **Ignore unmatched IDs intentionally:**
   ```c
   IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
   IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
-  { /* unknown id — ignore */ }
+  IPC_DISPATCH_IGNORE_UNKNOWN();
   ```
-- **Wrap the whole chain in `do { … } while (0)`** — the `while (0);`
-  becomes the chain's terminator and the `do` block is a single
-  statement, so the dispatch table can be embedded anywhere. Unmatched
-  IDs are silently dropped. Use this style if you dislike the trailing
-  block.
+- **Run custom unmatched-ID handling:**
+  ```c
+  IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
+  IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
+  IPC_UNKNOWN({
+      printf("unknown message id=0x%08x\n", msg->id);
+  });
+  ```
 
 Do **not** add a `;` after each `IPC_DISPATCH_TO` line — that would
 break the chain (it would become a stray empty statement after the
@@ -144,25 +147,20 @@ is already inside the macro.
 ### 4. Create the actor and register messages
 
 ```c
-static struct ipc_actor led_actor;
+IPC_ACTOR_DEFINE(led_actor, "led", led_handler, 512, 5, 8);
 
 int led_actor_init(void)
 {
-    ipc_actor_init(&led_actor, "led", led_handler, (struct ipc_actor_cfg){
-        .stack_size  = 512,
-        .priority    = 5,
-        .queue_depth = 8,
-    });
-    IPC_REGISTER(&led_actor, LedOn);
-    IPC_REGISTER(&led_actor, LedOff);
-    IPC_REGISTER(&led_actor, GetLedState);
-    IPC_SUBSCRIBE(&led_actor, LedFault);   /* event: pub/sub fan-out */
+    ipc_register(&led_actor, &LedOn);
+    ipc_register(&led_actor, &LedOff);
+    ipc_register(&led_actor, &GetLedStateRequest);
+    ipc_subscribe(&led_actor, &LedFault);   /* event: pub/sub fan-out */
     return 0;
 }
 ```
 
-`IPC_REGISTER` maps a CMD/QUERY descriptor → actor (single target).
-`IPC_SUBSCRIBE` adds the actor to a fan-out list for an EVENT
+`ipc_register()` maps a CMD descriptor → actor (single target).
+`ipc_subscribe()` adds the actor to a fan-out list for an EVENT
 descriptor (one row per `(event_id, actor)` pair; duplicate
 subscriptions are silently idempotent).
 
@@ -170,24 +168,25 @@ subscriptions are silently idempotent).
 
 ```c
 /* CMD — fire and forget */
-ipc_send(LedOn, .brightness = 200);
+ipc_send(LedOn, (LedOn_payload_t){.brightness = 200});
 
 /* EVENT — broadcast to all subscribers */
-ipc_publish(LedFault, .error_code = 0xDEAD, .channel = 1);
+ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
 
-/* QUERY — blocks the calling thread until reply or timeout */
-GetLedState_response_t state;
-int rc = ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100), .channel = 0);
+/* Async request/response — two commands */
+ipc_send(GetLedStateRequest, (GetLedStateRequest_payload_t){.channel = 0});
 
-/* Reply from inside a query handler */
-IPC_HANDLE(GetLedState, on_get_state) {
-    (void)self; (void)msg;
-    ipc_reply(raw_msg, GetLedState, .on = 1, .brightness = 80,
-              .on_time_ms = 12345);
+IPC_HANDLE(GetLedStateRequest, on_get_state_request) {
+    (void)self; (void)raw_msg;
+    ipc_send(GetLedStateResponse,
+             (GetLedStateResponse_payload_t){.channel = msg->channel,
+                                             .on = 1,
+                                             .brightness = 80,
+                                             .on_time_ms = 12345});
 }
 
 /* Delayed — re-arms self (replaces any previous pending delayed msg) */
-ipc_send_after(LedBlink, 500, .period_ms = 500, .brightness = 200);
+ipc_send_after(LedBlink, 500, (LedBlink_payload_t){.period_ms = 500, .brightness = 200});
 ```
 
 ### 6. Run the framework
@@ -199,7 +198,7 @@ int main(void) {
     led_actor_init();
     app_actor_init();
     button_actor_init();
-    /* ipc_actor_init has already spawned each actor's pthread. */
+    ipc_start_all_actors();
     /* ... do work, then ... */
     ipc_stop_all();            /* signal all threads to exit */
     ipc_run_all();             /* block in pthread_join until done */
@@ -208,12 +207,10 @@ int main(void) {
 ```
 
 Zephyr: actor `*_init` functions are called via `SYS_INIT(...,
-APPLICATION, 85)`. `ipc_actor_init` itself spawns each actor's
-`k_thread` (via the Zephyr port's `ipc_port_actor_init` hook), so
-by the time the kernel reaches `main()` every actor is already
-scheduled and polling its k_msgq. `main()` does not need to call
-`ipc_run_all()` or otherwise keep the kernel alive — it can just
-print a banner and return. The sample's
+APPLICATION, 85)`. After routes are registered, call
+`ipc_start_all_actors()` to spawn each statically declared actor's
+`k_thread` (via the Zephyr port's `ipc_port_actor_init` hook). The
+sample's
 [`examples/basic_zephyr/`](examples/basic_zephyr/) is structured this
 way; its `main.c` only prints a banner while the actor is initialized
 from `SYS_INIT`.
@@ -222,26 +219,24 @@ See `examples/led_actor/main.c` for a complete POSIX runnable.
 
 ## Configuration
 
-The framework's compile-time sizing knobs are defined in
-[`include/ipc_defaults.h`](include/ipc_defaults.h) and are overridable
-per translation unit. The public knobs:
+The only public compile-time sizing knob is defined in
+[`include/ipc_defaults.h`](include/ipc_defaults.h):
 
-| Macro                      | Default | What it sizes                                          |
-|----------------------------|---------|--------------------------------------------------------|
-| `IPC_PAYLOAD_SIZE`         | 32      | wire message payload bytes                             |
-| `IPC_MAX_REGISTRATIONS`    | 32      | CMD/QUERY ID → actor map                               |
-| `IPC_MAX_SUBSCRIPTIONS`    | 32      | EVENT ID → actor list (one row per subscriber)         |
-| `IPC_PORT_STATE_WORDS`     | 64      | per-actor opaque blob (×`sizeof(uintptr_t)`)           |
-| `IPC_QUERY_WAIT_WORDS`     | 24      | query-wait blob (×`sizeof(uintptr_t)`)                 |
-| `IPC_MAX_INFLIGHT_QUERIES` | 16      | max concurrent in-flight queries                       |
+| Macro              | Default | What it sizes              |
+|--------------------|---------|----------------------------|
+| `IPC_PAYLOAD_SIZE` | 32      | wire message payload bytes |
+
+Actor stack and queue storage are declared per actor with
+`IPC_ACTOR_DEFINE()`. Registry capacities and port opaque storage are
+fixed implementation details, not user configuration.
 
 Override precedence (highest wins):
 
-1. Define the `IPC_*` macro **before** `#include <ipc.h>` in a single TU.
+1. Define `IPC_PAYLOAD_SIZE` **before** `#include <ipc.h>` in a single TU.
 2. Pass `-DIPC_PAYLOAD_SIZE=64` to the compiler.
-3. On Zephyr, set the matching `CONFIG_ACTOR_*` symbol in Kconfig. The
-   port's overlay at `src/port/zephyr/ipc_config.h` translates Kconfig
-   values into `IPC_*` macros before the public defaults are consulted.
+3. On Zephyr, set `CONFIG_ACTOR_PAYLOAD_SIZE` in Kconfig. The port's
+   overlay at `src/port/zephyr/ipc_config.h` translates it into
+   `IPC_PAYLOAD_SIZE` before the public default is consulted.
 
 Every `IPC_*_DEFINE` macro `static_assert`s that its payload fits
 `IPC_PAYLOAD_SIZE` at compile time, so an oversized payload fails the
@@ -286,16 +281,17 @@ Inside a Zephyr app, drop this repo in as the `ipc` module (or use
 CONFIG_ACTOR=y
 ```
 
-Tune sizing via `CONFIG_ACTOR_PAYLOAD_SIZE`, `CONFIG_ACTOR_MAX_REGISTRATIONS`,
-etc. (see `src/port/zephyr/Kconfig`). The Zephyr port's
-`ipc_config.h` overlay maps Kconfig values to the `IPC_*` macros that
-`<ipc.h>` consumes.
+Tune only inline message payload size via `CONFIG_ACTOR_PAYLOAD_SIZE`
+(see `src/port/zephyr/Kconfig`). Actor stack and queue storage are
+specified per actor with `IPC_ACTOR_DEFINE()`.
 
 The repo ships a runnable Zephyr sample app at
 [`examples/basic_zephyr/`](examples/basic_zephyr/) that links this
-framework as a Zephyr module. It defines one actor, registers a
-`BasicPing` command, sends the initial command from `SYS_INIT`, and
-then re-arms itself with `ipc_send_after()` a few times. The sample has
+framework as a Zephyr module. It defines ping and pong actors, registers
+`BasicPing`/`BasicPong` commands, sends the initial command from
+`SYS_INIT`, and then re-arms itself with `ipc_send_after()` a few times.
+Before exiting, `main()` also sends `BasicStatusRequest`; the pong actor
+answers with `BasicStatusResponse` containing the current ping/pong counters. The sample has
 its own `west.yml`, so it can create a local Zephyr workspace under
 `examples/` directly from this checkout:
 
@@ -329,15 +325,13 @@ under `src/` is implementation detail and not exported to consumers.
 
 ## Design notes
 
-- **No linker scripts** — the registry is a simple linked list built at
-  runtime by `ipc_actor_init` and walked by name lookup.
-- **No `extern struct ipc_actor`** — `ipc_send` / `ipc_publish` /
-  `ipc_query` route via the message ID; consumers never need a
-  reference to the target actor.
+- **No linker scripts** — the registry is a simple linked list built by
+  static actor-definition constructors and walked by name lookup.
+- **No `extern struct ipc_actor`** — `ipc_send` and `ipc_publish` route
+  via the message ID; consumers never need a reference to the target actor.
 - **Lazy ID init** — message descriptor `.id` is FNV-1a-hashed from
-  `.name` on first register/subscribe/send. All registration happens
-  single-threaded during `ipc_actor_init` (which is the only place
-  threads are spawned too, on both POSIX and Zephyr).
+  `.name` on first register/subscribe/send. Route registration happens
+  during startup before `ipc_start_all_actors()` starts actor threads.
 - **One delayed message per actor** — `ipc_send_after` replaces the
   previous pending delayed msg. The current implementation uses a
   per-actor delay primitive (POSIX: one helper `pthread` per actor;
@@ -347,11 +341,15 @@ under `src/` is implementation detail and not exported to consumers.
   supported.
 - **Port seam** — `struct ipc_port_state` (in `ipc_port_state_t`) is
   the only platform-specific type visible in the public API. New ports
-  must implement the full `src/ipc_port.h` interface and stay within
-  `IPC_PORT_STATE_WORDS × sizeof(uintptr_t)` bytes.
-- **ISR-safe sends on Zephyr** — `k_msgq_put` + `k_poll_signal_raise`
-  are IRQ-safe; CMDs and EVENTS can be sent from interrupt context.
-  Queries cannot (they need a blocking wait).
+  must implement the full `src/ipc_port.h` interface and fit within the
+  fixed opaque storage in `ipc_port_state_t`.
+- **Interrupt-context publish** — use `IPC_ISR_PUBLISH(EventType, payload)`
+  from interrupt context on ports whose `ipc_port_send()` is interrupt-safe.
+  It is valid only after `ipc_start_all_actors()` freezes registration and
+  subscription tables, and after the event descriptor ID has already been
+  initialized during startup (for example by `ipc_subscribe`). Regular
+  `ipc_send()` / `ipc_publish()` remain thread-context APIs because they may
+  take the registry mutex.
 
 See `AGENTS.md` for contributor-facing guidance, including the
 "adding a new message kind" and "adding a new port" checklists.

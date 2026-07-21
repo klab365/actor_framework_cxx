@@ -18,9 +18,8 @@ IPC_CMD_DEFINE(MsgA, { int x; });
 IPC_CMD_DEFINE(MsgB, { int y; });
 IPC_EVENT_DEFINE(EvtA, { int v; });
 IPC_EVENT_DEFINE(EvtB, { int v; });
-IPC_QUERY_DEFINE(QryA, { int in; }, { int out; });
 
-/* Two throwaway actors. We never call ipc_actor_init on them (it would
+/* Two throwaway actors. We never start them (it would
  * touch the table mutex); we just want a valid struct ipc_actor to
  * associate with a registration. */
 struct ipc_actor g_actor_a;
@@ -78,7 +77,7 @@ TEST_F(RegistryTest, DuplicateRegistrationAssertsInDebug)
 #endif
 }
 
-TEST_F(RegistryTest, RegisterAssertsOnNonCmdOrQuery)
+TEST_F(RegistryTest, RegisterAssertsOnNonCmd)
 {
     /* EVENTS may not be registered — only subscribed. */
 #ifndef NDEBUG
@@ -103,22 +102,6 @@ TEST_F(RegistryTest, UnsubscribeOnlyMatchesSameActor)
     EXPECT_EQ(ipc_unsubscribe(&g_actor_b, &EvtA), -ENOENT);
     /* A's subscription is untouched. */
     EXPECT_EQ(ipc_unsubscribe(&g_actor_a, &EvtA), 0);
-}
-
-TEST_F(RegistryTest, RegisterAcceptsQueryKind)
-{
-    /* ipc_register allows both IPC_CMD and IPC_QUERY. Verify the
-     * QUERY path is exercised and produces a non-zero id distinct
-     * from any CMD id. Note: the static descriptor's .id is *not*
-     * zeroed by _ipc_reset_for_testing() (the descriptor lives in
-     * user memory), so we just check that the call succeeds and the
-     * id is non-zero and distinct from MsgA. */
-    EXPECT_EQ(ipc_register(&g_actor_a, &MsgA), 0);
-    EXPECT_EQ(ipc_register(&g_actor_a, &QryA), 0);
-    EXPECT_NE(MsgA.id, 0u);
-    EXPECT_NE(QryA.id, 0u);
-    /* Distinct names => distinct ids. */
-    EXPECT_NE(MsgA.id, QryA.id);
 }
 
 TEST_F(RegistryTest, SubscribeIsDeduplicated)

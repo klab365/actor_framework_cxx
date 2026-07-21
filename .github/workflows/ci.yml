@@ -27,15 +27,6 @@ jobs:
           mise_trust: "true"
           install: "true"
 
-      - name: Cache build directory
-        uses: actions/cache@v4
-        with:
-          path: build
-          # Bump the key whenever the build graph or its dependencies move.
-          key: build-debug-${{ runner.os }}-${{ hashFiles('CMakePresets.json', 'tests/CMakeLists.txt', 'cmake/GTest.cmake') }}
-          restore-keys: |
-            build-debug-${{ runner.os }}-
-
       - name: Check formatting
         run: mise run check-format
 
@@ -81,8 +72,18 @@ jobs:
         run: mise run run-example
 
   zephyr-integration:
-    name: zephyr integration (native_sim sample)
+    name: zephyr integration (native_sim sample, ${{ matrix.zephyr-track }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - zephyr-track: last-lts
+            zephyr-revision: v3.7.0
+            zephyr-sdk-version: 0.17.4
+          - zephyr-track: latest
+            zephyr-revision: latest
+            zephyr-sdk-version: 1.0.0
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,15 +95,46 @@ jobs:
           mise_trust: "true"
           install: "true"
 
+      - name: Select Zephyr SDK version
+        run: mise use --pin zephyr-sdk@${{ matrix.zephyr-sdk-version }}
+
       - name: Cache west workspace
         uses: actions/cache@v4
         with:
           path: |
             examples/.west
             examples/zephyr
-          key: zephyr-basic-${{ runner.os }}-${{ hashFiles('examples/basic_zephyr/west.yml', 'examples/basic_zephyr/**', 'zephyr/**', 'src/port/zephyr/**', 'src/ipc.c', 'include/**') }}
+          key: zephyr-basic-${{ matrix.zephyr-track }}-sdk-${{ matrix.zephyr-sdk-version }}-${{ runner.os }}-${{ hashFiles('examples/basic_zephyr/west.yml', 'examples/basic_zephyr/**', 'zephyr/**', 'src/port/zephyr/**', 'src/ipc.c', 'include/**') }}
           restore-keys: |
-            zephyr-basic-${{ runner.os }}-
+            zephyr-basic-${{ matrix.zephyr-track }}-sdk-${{ matrix.zephyr-sdk-version }}-${{ runner.os }}-
+
+      - name: Select Zephyr version
+        env:
+          ZEPHYR_REVISION: ${{ matrix.zephyr-revision }}
+        run: |
+          set -euo pipefail
+
+          revision="${ZEPHYR_REVISION}"
+          if [[ "${revision}" == "latest" ]]; then
+            revision="$(git ls-remote --tags --refs https://github.com/zephyrproject-rtos/zephyr.git \
+              | awk '{print $2}' \
+              | grep -E 'refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sed 's#refs/tags/##' \
+              | sort -V \
+              | tail -n1)"
+          fi
+
+          echo "Using Zephyr ${revision}"
+          python3 - "${revision}" <<'PY'
+          from pathlib import Path
+          import sys
+
+          revision = sys.argv[1]
+          west_yml = Path('examples/basic_zephyr/west.yml')
+          contents = west_yml.read_text()
+          contents = contents.replace('revision: v3.7.0', f'revision: {revision}')
+          west_yml.write_text(contents)
+          PY
 
       - name: Init west workspace
         run: mise run west-init

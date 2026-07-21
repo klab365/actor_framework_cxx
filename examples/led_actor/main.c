@@ -34,15 +34,16 @@ int main(void)
     led_actor_module_init();
     app_actor_module_init();
     button_actor_module_init();
+    ipc_start_all_actors();
 
-    /* Each ipc_actor_init above has already spawned the actor's
-     * pthread. We just need to drive the simulation, then call
-     * ipc_stop_all() to signal threads to exit and ipc_run_all()
-     * to block in pthread_join so the program doesn't fall out of
-     * main() and kill still-running pthreads. */
+    /* Static actor definitions are started as one explicit phase.
+     * We just need to drive the simulation, then call ipc_stop_all()
+     * to signal threads to exit and ipc_run_all() to block in
+     * pthread_join so the program doesn't fall out of main() and kill
+     * still-running pthreads. */
     sleep_ms(10);
 
-    /* Run a one-shot app scenario (query + fault publish) */
+    /* Run a one-shot app scenario (state request + fault publish) */
     app_run();
     sleep_ms(100);
 

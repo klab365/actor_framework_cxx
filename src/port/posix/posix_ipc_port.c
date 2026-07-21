@@ -63,98 +63,11 @@ struct ipc_port_state {
 };
 
 _Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
-               "Increase IPC_PORT_STATE_WORDS for POSIX port state");
+               "Increase ipc_port_state_t opaque storage for POSIX port state");
 
 static struct ipc_port_state *port_of(struct ipc_actor *a)
 {
     return (struct ipc_port_state *) (void *) &a->port;
-}
-
-/* ── Query-wait impl (response bytes at IPC_QUERY_RESPONSE_OFFSET) ─────── */
-
-struct ipc_query_wait_impl {
-    uint8_t response[IPC_QUERY_RESPONSE_SIZE];
-    int status;
-    bool expired;
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
-    bool done;
-};
-
-_Static_assert(sizeof(struct ipc_query_wait_impl) <= sizeof(ipc_query_wait_t),
-               "Increase IPC_QUERY_WAIT_WORDS for POSIX query wait");
-
-static struct ipc_query_wait_impl *qw_of(ipc_query_wait_t *w)
-{
-    return (struct ipc_query_wait_impl *) (void *) w;
-}
-
-int ipc_port_query_wait_init(ipc_query_wait_t *w)
-{
-    struct ipc_query_wait_impl *impl = qw_of(w);
-    memset(impl, 0, sizeof(*impl));
-    if (pthread_mutex_init(&impl->lock, NULL) != 0) {
-        return -ENOMEM;
-    }
-    if (pthread_cond_init(&impl->cond, NULL) != 0) {
-        pthread_mutex_destroy(&impl->lock);
-        return -ENOMEM;
-    }
-    return 0;
-}
-
-void ipc_port_query_wait_destroy(ipc_query_wait_t *w)
-{
-    struct ipc_query_wait_impl *impl = qw_of(w);
-    pthread_mutex_destroy(&impl->lock);
-    pthread_cond_destroy(&impl->cond);
-}
-
-int ipc_port_query_wait_block(ipc_query_wait_t *w, ipc_timeout_t timeout)
-{
-    struct ipc_query_wait_impl *impl = qw_of(w);
-    pthread_mutex_lock(&impl->lock);
-
-    int rc = 0;
-    if (timeout == IPC_TIMEOUT_FOREVER) {
-        while (!impl->done) {
-            pthread_cond_wait(&impl->cond, &impl->lock);
-        }
-        rc = impl->status;
-    } else {
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        int64_t ms = (int64_t) timeout;
-        ts.tv_sec += (time_t) (ms / 1000);
-        ts.tv_nsec += (long) (ms % 1000) * 1000000L;
-        if (ts.tv_nsec >= 1000000000L) {
-            ts.tv_sec++;
-            ts.tv_nsec -= 1000000000L;
-        }
-        int crc = 0;
-        while (!impl->done && crc == 0) {
-            crc = pthread_cond_timedwait(&impl->cond, &impl->lock, &ts);
-        }
-        if (!impl->done) {
-            impl->expired = true;
-            rc            = -ETIMEDOUT;
-        } else {
-            rc = impl->status;
-        }
-    }
-
-    pthread_mutex_unlock(&impl->lock);
-    return rc;
-}
-
-void ipc_port_query_wait_wake(ipc_query_wait_t *w)
-{
-    struct ipc_query_wait_impl *impl = qw_of(w);
-    pthread_mutex_lock(&impl->lock);
-    impl->status = 0;
-    impl->done   = true;
-    pthread_cond_broadcast(&impl->cond);
-    pthread_mutex_unlock(&impl->lock);
 }
 
 /* ── Actor thread ────────────────────────────────────────────────────────── */
@@ -211,11 +124,9 @@ int ipc_port_actor_init(struct ipc_actor *a)
     pthread_mutex_init(&p->delay_lock, NULL);
     pthread_cond_init(&p->delay_cond, NULL);
 
-    /* The actor's thread is spawned here, in ipc_actor_init. By the
-     * time the caller of ipc_actor_init returns, the actor is
-     * scheduled and polling its queue. This is what lets the
-     * Zephyr sample wire each module with its own SYS_INIT and
-     * leave main() empty. */
+    /* The actor's thread is spawned here during ipc_start_all_actors().
+     * By the time startup returns, the actor is scheduled and polling
+     * its queue. */
     return pthread_create(&p->thread, NULL, ipc_thread_fn, a);
 }
 
@@ -267,8 +178,7 @@ int ipc_port_start(struct ipc_actor *a)
 {
     /* Actor thread is already spawned in ipc_port_actor_init.
      * This hook is kept for port-interface compatibility but
-     * performs no work on POSIX — the actor is live the moment
-     * ipc_actor_init returns. */
+     * performs no work on POSIX. */
     (void) a;
     return 0;
 }

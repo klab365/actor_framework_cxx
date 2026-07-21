@@ -132,6 +132,51 @@ TEST_F(SendTest, PublishReturnsLastError)
     EXPECT_EQ(rc, -ENOMEM);
 }
 
+TEST_F(SendTest, IsrPublishRequiresFrozenRegistry)
+{
+    struct ipc_actor sub;
+    memset(&sub, 0, sizeof(sub));
+    ASSERT_EQ(ipc_subscribe(&sub, &EvtA), 0);
+
+    EvtA_payload_t payload = {.v = 1};
+    EXPECT_EQ(ipc_publish_isr_raw(&EvtA, &payload), -EPERM);
+    EXPECT_EQ(mock_port_actor_state(&sub)->send_count, 0);
+}
+
+TEST_F(SendTest, IsrPublishFansOutAfterStartAll)
+{
+    struct ipc_actor sub1, sub2;
+    memset(&sub1, 0, sizeof(sub1));
+    memset(&sub2, 0, sizeof(sub2));
+    ASSERT_EQ(ipc_subscribe(&sub1, &EvtA), 0);
+    ASSERT_EQ(ipc_subscribe(&sub2, &EvtA), 0);
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    EvtA_payload_t payload = {.v = 77};
+    ASSERT_EQ(ipc_publish_isr_raw(&EvtA, &payload), 0);
+
+    EXPECT_EQ(mock_port_actor_state(&sub1)->send_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&sub2)->send_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&sub1)->last_send_msg.kind, IPC_EVENT);
+    EXPECT_EQ(mock_port_actor_state(&sub1)->last_send_msg.id, EvtA.id);
+    EXPECT_EQ(mock_port_actor_state(&sub1)->last_send_msg.payload[0], 77);
+}
+
+TEST_F(SendTest, IsrPublishRejectsUninitializedDescriptorId)
+{
+    static ipc_msg_desc_t UntouchedEvt = {
+        .id   = 0,
+        .kind = IPC_EVENT,
+        .size = sizeof(EvtA_payload_t),
+        .name = "UntouchedEvt",
+    };
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    EvtA_payload_t payload = {.v = 1};
+    EXPECT_EQ(ipc_publish_isr_raw(&UntouchedEvt, &payload), -EINVAL);
+    EXPECT_EQ(UntouchedEvt.id, 0u);
+}
+
 TEST_F(SendTest, SendPropagatesPortError)
 {
     MsgA_payload_t payload = {.x = 1};
