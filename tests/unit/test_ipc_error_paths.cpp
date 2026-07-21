@@ -20,53 +20,52 @@ struct ipc_actor g_no_handler;
 namespace
 {
 
-IPC_HANDLE(MsgA, on_msg_a)
+static void on_msg_a(struct ipc_actor *self, const MsgA_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-IPC_HANDLE(MsgB, on_msg_b)
+static void on_msg_b(struct ipc_actor *self, const MsgB_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-IPC_HANDLE(EvtA, on_evt_a)
+static void on_evt_a(struct ipc_actor *self, const EvtA_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-static const struct ipc_actor_handler_entry msg_a_handlers[] = {
-    IPC_ON(MsgA, on_msg_a),
-};
+void on_msg_a_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_msg_a(self, (const MsgA_payload_t *) payload, raw_msg);
+}
 
-static const struct ipc_actor_handler_entry msg_b_handlers[] = {
-    IPC_ON(MsgB, on_msg_b),
-};
+void on_msg_b_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_msg_b(self, (const MsgB_payload_t *) payload, raw_msg);
+}
 
-static const struct ipc_actor_handler_entry evt_a_handlers[] = {
-    IPC_ON(EvtA, on_evt_a),
-};
+void on_evt_a_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_evt_a(self, (const EvtA_payload_t *) payload, raw_msg);
+}
 
-static const struct ipc_actor_handler_entry cmd_handlers[] = {
-    IPC_ON(MsgA, on_msg_a),
-    IPC_ON(MsgB, on_msg_b),
-};
-
-void register_static_actor(struct ipc_actor *actor, const char *name,
-                           const struct ipc_actor_handler_entry *handlers, size_t handler_count)
+void register_static_handler(struct ipc_actor *actor, const char *name, ipc_msg_desc_t *desc,
+                             ipc_actor_msg_handler_t handler)
 {
     memset(actor, 0, sizeof(*actor));
-    actor->name          = name;
-    actor->handler       = nullptr;
-    actor->handlers      = handlers;
-    actor->handler_count = handler_count;
-    _ipc_actor_register_static(actor);
+    actor->name    = name;
+    actor->handler = nullptr;
+    _ipc_actor_register_handler_static(actor, desc, handler);
 }
 
 class ErrorPathTest : public ::testing::Test
@@ -93,8 +92,7 @@ class ErrorPathTest : public ::testing::Test
 
 TEST_F(ErrorPathTest, SendToHandlerNullActorSucceedsWithoutDispatch)
 {
-    register_static_actor(&g_no_handler, "no_handler_actor", msg_a_handlers,
-                          sizeof(msg_a_handlers) / sizeof(msg_a_handlers[0]));
+    register_static_handler(&g_no_handler, "no_handler_actor", &MsgA, on_msg_a_shim);
     mock_port_set_invoke_handlers(true);
 
     MsgA_payload_t payload = {.x = 11};
@@ -108,8 +106,7 @@ TEST_F(ErrorPathTest, SendToHandlerNullActorSucceedsWithoutDispatch)
 
 TEST_F(ErrorPathTest, SendAfterToHandlerNullActorSucceeds)
 {
-    register_static_actor(&g_no_handler, "no_handler_actor", msg_b_handlers,
-                          sizeof(msg_b_handlers) / sizeof(msg_b_handlers[0]));
+    register_static_handler(&g_no_handler, "no_handler_actor", &MsgB, on_msg_b_shim);
     MsgB_payload_t payload = {.y = 22};
     EXPECT_EQ(ipc_send_after_raw(&MsgB, 50, &payload), 0);
     const auto *st = mock_port_actor_state(&g_no_handler);
@@ -118,8 +115,7 @@ TEST_F(ErrorPathTest, SendAfterToHandlerNullActorSucceeds)
 
 TEST_F(ErrorPathTest, PublishToHandlerNullSubscriberSucceeds)
 {
-    register_static_actor(&g_no_handler, "no_handler_actor", evt_a_handlers,
-                          sizeof(evt_a_handlers) / sizeof(evt_a_handlers[0]));
+    register_static_handler(&g_no_handler, "no_handler_actor", &EvtA, on_evt_a_shim);
     EvtA_payload_t payload = {.v = 7};
     EXPECT_EQ(ipc_publish_raw(&EvtA, &payload), 0);
     const auto *st = mock_port_actor_state(&g_no_handler);
@@ -128,8 +124,7 @@ TEST_F(ErrorPathTest, PublishToHandlerNullSubscriberSucceeds)
 
 TEST_F(ErrorPathTest, SendMacroPropagatesReturnCode)
 {
-    register_static_actor(&g_actor, "test_actor", msg_a_handlers,
-                          sizeof(msg_a_handlers) / sizeof(msg_a_handlers[0]));
+    register_static_handler(&g_actor, "test_actor", &MsgA, on_msg_a_shim);
     mock_port_set_next_send_rc(-EAGAIN);
     MsgA_payload_t p = {.x = 1};
     EXPECT_EQ(ipc_send(MsgA, p), -EAGAIN);
@@ -138,8 +133,7 @@ TEST_F(ErrorPathTest, SendMacroPropagatesReturnCode)
 
 TEST_F(ErrorPathTest, SendAfterMacroPropagatesReturnCode)
 {
-    register_static_actor(&g_actor, "test_actor", msg_b_handlers,
-                          sizeof(msg_b_handlers) / sizeof(msg_b_handlers[0]));
+    register_static_handler(&g_actor, "test_actor", &MsgB, on_msg_b_shim);
     mock_port_set_next_send_after_rc(-ENOSPC);
     MsgB_payload_t p = {.y = 2};
     EXPECT_EQ(ipc_send_after(MsgB, 10, p), -ENOSPC);
@@ -150,10 +144,8 @@ TEST_F(ErrorPathTest, PublishMacroPropagatesError)
 {
     struct ipc_actor sub1{};
     struct ipc_actor sub2{};
-    register_static_actor(&sub1, "sub1", evt_a_handlers,
-                          sizeof(evt_a_handlers) / sizeof(evt_a_handlers[0]));
-    register_static_actor(&sub2, "sub2", evt_a_handlers,
-                          sizeof(evt_a_handlers) / sizeof(evt_a_handlers[0]));
+    register_static_handler(&sub1, "sub1", &EvtA, on_evt_a_shim);
+    register_static_handler(&sub2, "sub2", &EvtA, on_evt_a_shim);
 
     mock_port_set_send_should_fail(true);
     EvtA_payload_t p = {.v = 3};
@@ -162,8 +154,7 @@ TEST_F(ErrorPathTest, PublishMacroPropagatesError)
 
 TEST_F(ErrorPathTest, SendPropagatesPortErrors)
 {
-    register_static_actor(&g_actor, "test_actor", msg_a_handlers,
-                          sizeof(msg_a_handlers) / sizeof(msg_a_handlers[0]));
+    register_static_handler(&g_actor, "test_actor", &MsgA, on_msg_a_shim);
     MsgA_payload_t p = {.x = 1};
 
     mock_port_set_next_send_rc(-EINVAL);
@@ -180,10 +171,8 @@ TEST_F(ErrorPathTest, PublishPropagatesFirstNonZeroError)
 {
     struct ipc_actor sub1{};
     struct ipc_actor sub2{};
-    register_static_actor(&sub1, "sub1", evt_a_handlers,
-                          sizeof(evt_a_handlers) / sizeof(evt_a_handlers[0]));
-    register_static_actor(&sub2, "sub2", evt_a_handlers,
-                          sizeof(evt_a_handlers) / sizeof(evt_a_handlers[0]));
+    register_static_handler(&sub1, "sub1", &EvtA, on_evt_a_shim);
+    register_static_handler(&sub2, "sub2", &EvtA, on_evt_a_shim);
 
     mock_port_set_next_send_rc(-EIO);
     EvtA_payload_t p = {.v = 1};
@@ -194,8 +183,7 @@ TEST_F(ErrorPathTest, PublishPropagatesFirstNonZeroError)
 
 TEST_F(ErrorPathTest, SendAfterPropagatesPortError)
 {
-    register_static_actor(&g_actor, "test_actor", msg_b_handlers,
-                          sizeof(msg_b_handlers) / sizeof(msg_b_handlers[0]));
+    register_static_handler(&g_actor, "test_actor", &MsgB, on_msg_b_shim);
     mock_port_set_next_send_after_rc(-ENOMEM);
     MsgB_payload_t p = {.y = 1};
     EXPECT_EQ(ipc_send_after_raw(&MsgB, 100, &p), -ENOMEM);

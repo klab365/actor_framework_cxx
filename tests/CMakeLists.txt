@@ -43,7 +43,6 @@ add_executable(ipc_unit_test
     unit/test_ipc_send.cpp
     unit/test_ipc_lifecycle.cpp
     unit/test_ipc_error_paths.cpp
-    unit/test_ipc_dispatch.cpp
 )
 target_link_libraries(ipc_unit_test PRIVATE
     ipc_core

@@ -2,8 +2,8 @@
 
 A small **actor-model IPC framework** written in **C11** (with a **C++17**
 test suite). Each actor owns its own thread and message inbox; messages
-are typed and normally bound through static `IPC_ACTOR_HANDLERS` tables.
-The core is platform-agnostic — POSIX (pthreads) and Zephyr (`k_msgq` / `k_thread`)
+are typed and bound to actors with `IPC_ACTOR_HANDLE`. The core is
+platform-agnostic — POSIX (pthreads) and Zephyr (`k_msgq` / `k_thread`)
 live behind a single port seam.
 
 - One public header: `<ipc.h>`.
@@ -76,48 +76,23 @@ IPC_CMD_DEFINE(GetLedStateResponse, {
 IPC_EVENT_DEFINE(LedFault, { uint32_t error_code; uint8_t channel; });
 ```
 
-### 2. Write a typed handler
+### 2. Define an actor and its typed handlers
 
 ```c
-IPC_HANDLE(LedOn, on_led_on) {
-    (void)self; (void)raw_msg;
+IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
+
+IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on)
+{
+    (void) self;
+    (void) raw_msg;
     /* `msg` is `const LedOn_payload_t *` — typed, no cast */
     set_led(msg->brightness);
 }
 ```
 
-The macro expands to a function with signature:
-
-```c
-static void on_led_on(struct ipc_actor *self,
-                      const LedOn_payload_t *msg,
-                      const struct ipc_msg *raw_msg);
-```
-
-### 3. Bind handlers to an actor
-
-```c
-static const struct ipc_actor_handler_entry led_handlers[] = {
-    IPC_ON(LedOn, on_led_on),
-    IPC_ON(LedOff, on_led_off),
-    IPC_ON(GetLedStateRequest, on_get_state_request),
-};
-
-IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8,
-                 IPC_ACTOR_HANDLERS(led_handlers));
-```
-
-The static handler table maps descriptors to typed handlers. The actor
-is statically registered at startup: CMD entries become single-target
-routes and EVENT entries become fan-out subscriptions automatically.
-
-For actors that need custom raw dispatch, use the same macro with a raw
-handler option:
-
-```c
-IPC_ACTOR_DEFINE(custom_actor, "custom", 1024, 5, 8,
-                 IPC_ACTOR_RAW_HANDLER(custom_handler));
-```
+`IPC_ACTOR_HANDLE(actor, MsgType, handler_fn)` expands to a typed handler
+function plus static routing metadata. CMD handlers become single-target
+routes; EVENT handlers become fan-out subscriptions automatically.
 
 ### 5. Send messages (no `extern` needed)
 
@@ -131,7 +106,7 @@ ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
 /* Async request/response — two commands */
 ipc_send(GetLedStateRequest, (GetLedStateRequest_payload_t){.channel = 0});
 
-IPC_HANDLE(GetLedStateRequest, on_get_state_request) {
+IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
     (void)self; (void)raw_msg;
     ipc_send(GetLedStateResponse,
              (GetLedStateResponse_payload_t){.channel = msg->channel,
@@ -306,7 +281,7 @@ under `src/` is implementation detail and not exported to consumers.
   interface and provide their own per-actor state storage.
 - **Interrupt-context publish** — use `IPC_ISR_PUBLISH(EventType, payload)`
   only after `ipc_start_all_actors()` succeeds. The event descriptor must
-  already be present in an `IPC_ACTOR_HANDLERS` table, and the active port's
+  already be bound with `IPC_ACTOR_HANDLE`, and the active port's
   `ipc_port_send_isr()` must be safe for its interrupt context.
 
 See `AGENTS.md` for contributor-facing guidance, including the

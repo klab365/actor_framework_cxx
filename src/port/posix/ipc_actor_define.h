@@ -15,6 +15,8 @@ struct ipc_actor;
 extern "C" {
 #endif
 void _ipc_actor_register_static(struct ipc_actor *actor);
+void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t *desc,
+                                        ipc_actor_msg_handler_t handler);
 void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg);
 #ifdef __cplusplus
 }
@@ -24,19 +26,19 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
  * stack_size/priority/queue_depth. Preprocessor substitution is purely
  * textual, so a parameter named `stack_size` would also rewrite the
  * designated initializer `.stack_size`. */
-#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, ...)              \
+#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth)                   \
     _Static_assert((stack_sz) > 0, #actor_sym ": stack_size must be positive");           \
     _Static_assert((qdepth) > 0, #actor_sym ": queue_depth must be positive");            \
     static struct ipc_port_state actor_sym##_port_state;                                  \
     static struct ipc_actor actor_sym = {                                                 \
-        .name = (actor_name),                                                             \
+        .name    = (actor_name),                                                          \
+        .handler = ipc_dispatch_actor_handlers,                                           \
         .cfg =                                                                            \
             {                                                                             \
                 .stack_size  = (stack_sz),                                                \
                 .priority    = (prio),                                                    \
                 .queue_depth = (qdepth),                                                  \
             },                                                                            \
-        __VA_ARGS__,                                                                      \
         .port  = &(actor_sym##_port_state),                                               \
         ._next = NULL,                                                                    \
     };                                                                                    \
@@ -44,3 +46,20 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
     {                                                                                     \
         _ipc_actor_register_static(&(actor_sym));                                         \
     }
+
+#define IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn)                                       \
+    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,             \
+                           const struct ipc_msg *raw_msg);                                     \
+    static void actor_sym##_##handler_fn##_ipc_trampoline(                                     \
+        struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)            \
+    {                                                                                          \
+        handler_fn(self, (const MsgType##_payload_t *) payload, raw_msg);                      \
+    }                                                                                          \
+    static __attribute__((constructor(102))) void actor_sym##_##handler_fn##_register_handler( \
+        void)                                                                                  \
+    {                                                                                          \
+        _ipc_actor_register_handler_static(&(actor_sym), &(MsgType),                           \
+                                           actor_sym##_##handler_fn##_ipc_trampoline);         \
+    }                                                                                          \
+    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,             \
+                           const struct ipc_msg *raw_msg)

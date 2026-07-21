@@ -96,9 +96,13 @@ static void on_tick(struct ipc_actor *self)
     }
 }
 
+/* ── Actor instance ──────────────────────────────────────────────────────── */
+
+IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 16);
+
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
-IPC_HANDLE(ButtonTick, on_tick_msg)
+IPC_ACTOR_HANDLE(button_actor, ButtonTick, on_tick_msg)
 {
     (void) raw_msg;
     (void) msg;
@@ -107,7 +111,7 @@ IPC_HANDLE(ButtonTick, on_tick_msg)
     on_tick(self);
 }
 
-IPC_HANDLE(LedFault, on_fault)
+IPC_ACTOR_HANDLE(button_actor, LedFault, on_fault)
 {
     (void) self;
     (void) raw_msg;
@@ -121,15 +125,6 @@ IPC_HANDLE(LedFault, on_fault)
     g_hold_ticks  = 0;
     g_fault_fired = false;
 }
-
-/* ── Actor instance ──────────────────────────────────────────────────────── */
-
-static const struct ipc_actor_handler_entry button_handlers[] = {
-    IPC_ON(ButtonTick, on_tick_msg),
-    IPC_ON(LedFault, on_fault),
-};
-
-IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 16, IPC_ACTOR_HANDLERS(button_handlers));
 
 int button_actor_module_init(void)
 {

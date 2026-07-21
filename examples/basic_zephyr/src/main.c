@@ -17,7 +17,11 @@ IPC_CMD_DEFINE(BasicStatusResponse, {
 static atomic_uint basic_ping_count;
 static atomic_uint basic_pong_count;
 
-IPC_HANDLE(BasicPing, on_basic_ping)
+/* Each actor declares exact-size static stack/msgq storage via ipc.h. */
+IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4);
+IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4);
+
+IPC_ACTOR_HANDLE(pong_actor, BasicPing, on_basic_ping)
 {
     ARG_UNUSED(self);
 
@@ -31,7 +35,7 @@ IPC_HANDLE(BasicPing, on_basic_ping)
     }
 }
 
-IPC_HANDLE(BasicPong, on_basic_pong)
+IPC_ACTOR_HANDLE(ping_actor, BasicPong, on_basic_pong)
 {
     (void) self;
     (void) raw_msg;
@@ -48,7 +52,7 @@ IPC_HANDLE(BasicPong, on_basic_pong)
     }
 }
 
-IPC_HANDLE(BasicStatusRequest, on_basic_status_request)
+IPC_ACTOR_HANDLE(pong_actor, BasicStatusRequest, on_basic_status_request)
 {
     (void) self;
     (void) raw_msg;
@@ -63,7 +67,7 @@ IPC_HANDLE(BasicStatusRequest, on_basic_status_request)
     ipc_send(BasicStatusResponse, response);
 }
 
-IPC_HANDLE(BasicStatusResponse, on_basic_status_response)
+IPC_ACTOR_HANDLE(ping_actor, BasicStatusResponse, on_basic_status_response)
 {
     (void) self;
     (void) raw_msg;
@@ -71,22 +75,6 @@ IPC_HANDLE(BasicStatusResponse, on_basic_status_response)
     printk("ipc basic: status response request=%u ping=%u pong=%u\n", msg->request_id,
            msg->ping_count, msg->pong_count);
 }
-
-static const struct ipc_actor_handler_entry ping_handlers[] = {
-    IPC_ON(BasicPong, on_basic_pong),
-    IPC_ON(BasicStatusResponse, on_basic_status_response),
-};
-
-static const struct ipc_actor_handler_entry pong_handlers[] = {
-    IPC_ON(BasicPing, on_basic_ping),
-    IPC_ON(BasicStatusRequest, on_basic_status_request),
-};
-
-/* Each actor declares exact-size static stack/msgq storage via ipc.h. */
-IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4,
-                 IPC_ACTOR_HANDLERS(ping_handlers));
-IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4,
-                 IPC_ACTOR_HANDLERS(pong_handlers));
 
 static int basic_actor_init(void)
 {

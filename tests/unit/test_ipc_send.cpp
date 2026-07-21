@@ -36,7 +36,8 @@ int g_static_handler_value;
 int g_static_event_calls;
 int g_static_event_value;
 
-IPC_HANDLE(StaticHandledCmd, on_static_handled_cmd)
+static void on_static_handled_cmd(struct ipc_actor *self, const StaticHandledCmd_payload_t *msg,
+                                  const struct ipc_msg *raw_msg)
 {
     (void) raw_msg;
     EXPECT_NE(self, nullptr);
@@ -44,7 +45,8 @@ IPC_HANDLE(StaticHandledCmd, on_static_handled_cmd)
     g_static_handler_value = msg->value;
 }
 
-IPC_HANDLE(StaticHandledEvt, on_static_handled_evt)
+static void on_static_handled_evt(struct ipc_actor *self, const StaticHandledEvt_payload_t *msg,
+                                  const struct ipc_msg *raw_msg)
 {
     (void) raw_msg;
     EXPECT_NE(self, nullptr);
@@ -52,59 +54,78 @@ IPC_HANDLE(StaticHandledEvt, on_static_handled_evt)
     g_static_event_value = msg->value;
 }
 
-IPC_HANDLE(MsgA, on_msg_a)
+static void on_msg_a(struct ipc_actor *self, const MsgA_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-IPC_HANDLE(MsgB, on_msg_b)
+static void on_msg_b(struct ipc_actor *self, const MsgB_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-IPC_HANDLE(EmptyCmd, on_empty_cmd)
+static void on_empty_cmd(struct ipc_actor *self, const EmptyCmd_payload_t *msg,
+                         const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-IPC_HANDLE(EvtA, on_evt_a)
+static void on_evt_a(struct ipc_actor *self, const EvtA_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
 {
     (void) self;
     (void) msg;
     (void) raw_msg;
 }
 
-static const struct ipc_actor_handler_entry static_handlers[] = {
-    IPC_ON(StaticHandledCmd, on_static_handled_cmd),
-    IPC_ON(StaticHandledEvt, on_static_handled_evt),
-};
+void on_static_handled_cmd_shim(struct ipc_actor *self, const void *payload,
+                                const struct ipc_msg *raw_msg)
+{
+    on_static_handled_cmd(self, (const StaticHandledCmd_payload_t *) payload, raw_msg);
+}
 
-static const struct ipc_actor_handler_entry send_handlers[] = {
-    IPC_ON(MsgA, on_msg_a),
-    IPC_ON(MsgB, on_msg_b),
-    IPC_ON(EmptyCmd, on_empty_cmd),
-};
+void on_static_handled_evt_shim(struct ipc_actor *self, const void *payload,
+                                const struct ipc_msg *raw_msg)
+{
+    on_static_handled_evt(self, (const StaticHandledEvt_payload_t *) payload, raw_msg);
+}
 
-static const struct ipc_actor_handler_entry evt_a_handlers[] = {
-    IPC_ON(EvtA, on_evt_a),
-};
+void on_msg_a_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_msg_a(self, (const MsgA_payload_t *) payload, raw_msg);
+}
+
+void on_msg_b_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_msg_b(self, (const MsgB_payload_t *) payload, raw_msg);
+}
+
+void on_empty_cmd_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_empty_cmd(self, (const EmptyCmd_payload_t *) payload, raw_msg);
+}
+
+void on_evt_a_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_evt_a(self, (const EvtA_payload_t *) payload, raw_msg);
+}
 
 struct ipc_actor g_actor;
 
 void register_evt_a_subscriber(struct ipc_actor *actor, const char *name)
 {
     memset(actor, 0, sizeof(*actor));
-    actor->name          = name;
-    actor->handler       = nullptr;
-    actor->handlers      = evt_a_handlers;
-    actor->handler_count = sizeof(evt_a_handlers) / sizeof(evt_a_handlers[0]);
-    _ipc_actor_register_static(actor);
+    actor->name    = name;
+    actor->handler = nullptr;
+    _ipc_actor_register_handler_static(actor, &EvtA, on_evt_a_shim);
 }
 
 class SendTest : public ::testing::Test
@@ -121,9 +142,9 @@ class SendTest : public ::testing::Test
         g_static_event_value   = 0;
         g_actor.name           = "test_actor";
         g_actor.handler        = nullptr;
-        g_actor.handlers       = send_handlers;
-        g_actor.handler_count  = sizeof(send_handlers) / sizeof(send_handlers[0]);
-        _ipc_actor_register_static(&g_actor);
+        _ipc_actor_register_handler_static(&g_actor, &MsgA, on_msg_a_shim);
+        _ipc_actor_register_handler_static(&g_actor, &MsgB, on_msg_b_shim);
+        _ipc_actor_register_handler_static(&g_actor, &EmptyCmd, on_empty_cmd_shim);
     }
     void TearDown() override
     {
@@ -137,10 +158,11 @@ TEST_F(SendTest, StaticHandlerActorRoutesWithoutExplicitRegister)
     struct ipc_actor static_actor = {};
     static_actor.name             = "static_actor";
     static_actor.handler          = ipc_dispatch_actor_handlers;
-    static_actor.handlers         = static_handlers;
-    static_actor.handler_count    = sizeof(static_handlers) / sizeof(static_handlers[0]);
 
-    _ipc_actor_register_static(&static_actor);
+    _ipc_actor_register_handler_static(&static_actor, &StaticHandledCmd,
+                                       on_static_handled_cmd_shim);
+    _ipc_actor_register_handler_static(&static_actor, &StaticHandledEvt,
+                                       on_static_handled_evt_shim);
     mock_port_set_invoke_handlers(true);
 
     StaticHandledCmd_payload_t payload = {.value = 123};

@@ -46,14 +46,25 @@ static ipc_subscription_t sub_table[IPC_CORE_MAX_SUBSCRIPTIONS];
 static int sub_count;
 static bool actors_started;
 
+typedef struct {
+    struct ipc_actor *actor;
+    uint32_t msg_id;
+    ipc_actor_msg_handler_t handler;
+} ipc_handler_binding_t;
+
+static ipc_handler_binding_t handler_table[IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS];
+static int handler_count;
+
 /* ── Test reset ─────────────────────────────────────────────────────────── */
 /* See declaration in ipc_internal.h. Production code must never call this. */
 void _ipc_reset_for_testing(void)
 {
-    reg_count = 0;
-    sub_count = 0;
+    reg_count     = 0;
+    sub_count     = 0;
+    handler_count = 0;
     memset(reg_table, 0, sizeof(reg_table));
     memset(sub_table, 0, sizeof(sub_table));
+    memset(handler_table, 0, sizeof(handler_table));
     actors_started  = false;
     _ipc_actor_list = NULL;
 }
@@ -81,7 +92,7 @@ static int register_cmd_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *desc)
     for (int i = 0; i < reg_count; i++) {
         if (reg_table[i].msg_id == desc->id) {
             fprintf(stderr, "ipc: duplicate registration for '%s'\n", desc->name);
-            assert(0 && "duplicate IPC_ON command route");
+            assert(0 && "duplicate IPC_ACTOR_HANDLE command route");
             return -EALREADY;
         }
     }
@@ -120,19 +131,6 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
     return 0;
 }
 
-static int register_actor_handlers_unlocked(struct ipc_actor *actor)
-{
-    for (size_t i = 0; i < actor->handler_count; i++) {
-        ipc_msg_desc_t *desc = actor->handlers[i].desc;
-        int rc               = desc->kind == IPC_EVENT ? subscribe_event_unlocked(actor, desc)
-                                                       : register_cmd_unlocked(actor, desc);
-        if (rc) {
-            return rc;
-        }
-    }
-    return 0;
-}
-
 /* ── Helper: find registration ───────────────────────────────────────────── */
 
 static struct ipc_actor *find_registered(uint32_t msg_id)
@@ -149,8 +147,6 @@ static struct ipc_actor *find_registered(uint32_t msg_id)
 
 void _ipc_actor_register_static(struct ipc_actor *actor)
 {
-    actor->_next          = NULL;
-
     /* Static actor startup hooks run during process/kernel startup before
      * application concurrency begins, so keep this registration path free
      * of port locks (some ports' kernel primitives are not ready during
@@ -162,9 +158,30 @@ void _ipc_actor_register_static(struct ipc_actor *actor)
         }
         pp = &(*pp)->_next;
     }
-    *pp = actor;
 
-    (void) register_actor_handlers_unlocked(actor);
+    actor->_next = NULL;
+    *pp          = actor;
+}
+
+void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t *desc,
+                                        ipc_actor_msg_handler_t handler)
+{
+    _ipc_actor_register_static(actor);
+    _ipc_ensure_id(desc);
+
+    if (handler_count >= (int) (IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS)) {
+        assert(0 && "IPC handler table full");
+        return;
+    }
+
+    handler_table[handler_count].actor   = actor;
+    handler_table[handler_count].msg_id  = desc->id;
+    handler_table[handler_count].handler = handler;
+    handler_count++;
+
+    int rc = desc->kind == IPC_EVENT ? subscribe_event_unlocked(actor, desc)
+                                     : register_cmd_unlocked(actor, desc);
+    (void) rc;
 }
 
 /* ── ipc_send_raw ────────────────────────────────────────────────────────── */
@@ -280,10 +297,10 @@ int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
 
 void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg)
 {
-    for (size_t i = 0; i < self->handler_count; i++) {
-        const struct ipc_actor_handler_entry *entry = &self->handlers[i];
-        if (entry->desc->id == msg->id) {
-            entry->handler(self, msg->payload, msg);
+    for (int i = 0; i < handler_count; i++) {
+        const ipc_handler_binding_t *binding = &handler_table[i];
+        if (binding->actor == self && binding->msg_id == msg->id) {
+            binding->handler(self, msg->payload, msg);
             return;
         }
     }

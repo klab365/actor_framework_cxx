@@ -55,3 +55,5 @@ void _ipc_reset_for_testing(void);
  * Called by IPC_ACTOR_DEFINE-generated startup hooks; tests may call
  * it after _ipc_reset_for_testing() because startup hooks do not rerun. */
 void _ipc_actor_register_static(struct ipc_actor *actor);
+void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t *desc,
+                                        ipc_actor_msg_handler_t handler);

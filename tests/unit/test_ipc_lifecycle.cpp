@@ -13,7 +13,17 @@ extern "C" {
 namespace
 {
 
+IPC_CMD_DEFINE(LifecycleCmd, { int dummy; });
+
 struct ipc_actor g_a, g_b;
+
+static void lifecycle_cmd_handler(struct ipc_actor *self, const void *payload,
+                                  const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) payload;
+    (void) raw_msg;
+}
 
 static void define_test_actor(struct ipc_actor *a, const char *name, struct ipc_actor_cfg cfg)
 {
@@ -74,6 +84,18 @@ TEST_F(LifecycleTest, StopAllCallsStopOnEveryActor)
     ipc_stop_all();
     EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 1);
     EXPECT_EQ(mock_port_actor_state(&g_b)->stop_count, 1);
+}
+
+TEST_F(LifecycleTest, ReRegisteringExistingActorForHandlerDoesNotCorruptActorList)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0});
+
+    _ipc_actor_register_handler_static(&g_a, &LifecycleCmd, lifecycle_cmd_handler);
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&g_b)->start_count, 1);
 }
 
 TEST_F(LifecycleTest, StaticActorRegistrationPreservesCfgFields)

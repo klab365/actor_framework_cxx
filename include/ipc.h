@@ -78,11 +78,6 @@ typedef void (*ipc_actor_handler_t)(struct ipc_actor *self, const struct ipc_msg
 typedef void (*ipc_actor_msg_handler_t)(struct ipc_actor *self, const void *payload,
                                         const struct ipc_msg *raw_msg);
 
-struct ipc_actor_handler_entry {
-    ipc_msg_desc_t *desc;
-    ipc_actor_msg_handler_t handler;
-};
-
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
 
 struct ipc_actor {
@@ -92,9 +87,6 @@ struct ipc_actor {
     ipc_actor_handler_t handler;
     /** Stack size, priority, queue depth */
     struct ipc_actor_cfg cfg;
-    /** Optional static per-message handler table. */
-    const struct ipc_actor_handler_entry *handlers;
-    size_t handler_count;
     /** Opaque platform state owned by the active port implementation. */
     void *port;
     /** Linked list of all actors, for ipc_start_all_actors() */
@@ -142,58 +134,9 @@ struct ipc_actor {
         .name = #TypeName,                                              \
     }
 
-/* ── Handler macros ─────────────────────────────────────────────────────── */
-
-/*
- * IPC_HANDLE(MsgType, handler_fn)
- *
- * Defines an explicit typed handler function with this signature:
- *   static void handler_fn(struct ipc_actor *self,
- *                          const MsgType##_payload_t *msg,
- *                          const struct ipc_msg *raw_msg)
- */
-#define IPC_HANDLE(MsgType, handler_fn)                                            \
-    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg, \
-                           const struct ipc_msg *raw_msg)
-
-#define IPC_ON(MsgType, handler_fn) \
-    {.desc = &(MsgType), .handler = (ipc_actor_msg_handler_t) (handler_fn)}
-
-#define IPC_ACTOR_RAW_HANDLER(handler_fn) \
-    .handler = (handler_fn), .handlers = NULL, .handler_count = 0
-
-#define IPC_ACTOR_HANDLERS(handlers_arr)                                \
-    .handler = ipc_dispatch_actor_handlers, .handlers = (handlers_arr), \
-    .handler_count = sizeof(handlers_arr) / sizeof((handlers_arr)[0])
+/* ── Handler dispatch ───────────────────────────────────────────────────── */
 
 void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg);
-
-/*
- * IPC_DISPATCH_TO(raw_msg, MsgType, handler_fn)
- *
- * In actor dispatch chains, casts payload to MsgType##_payload_t and
- * calls the provided handler function if IDs match.
- */
-#define IPC_DISPATCH_TO(raw_msg, MsgType, handler_fn)                        \
-    if ((raw_msg)->id == (MsgType).id) {                                     \
-        const struct ipc_msg *__ipc_raw = (raw_msg);                         \
-        const MsgType##_payload_t *__ipc_typed =                             \
-            (const MsgType##_payload_t *) (const void *) __ipc_raw->payload; \
-        handler_fn(self, __ipc_typed, __ipc_raw);                            \
-    } else
-
-/*
- * IPC_UNKNOWN({ ... });
- * IPC_DISPATCH_IGNORE_UNKNOWN();
- *
- * Terminate an IPC_DISPATCH_TO chain. IPC_UNKNOWN runs caller-provided
- * statements for unmatched message IDs; IPC_DISPATCH_IGNORE_UNKNOWN drops
- * unmatched messages intentionally.
- */
-#define IPC_UNKNOWN(...) __VA_ARGS__
-#define IPC_DISPATCH_IGNORE_UNKNOWN() \
-    {                                 \
-    }
 
 /* ── Send / publish macros ──────────────────────────────────────────────── */
 
@@ -281,7 +224,6 @@ void ipc_stop_all(void);
  * It fully declares an actor statically. Runtime startup is a single
  * call to ipc_start_all_actors():
  *
- *   IPC_ACTOR_DEFINE(my_actor, "my_actor", 1024, 5, 4,
- *                    IPC_ACTOR_RAW_HANDLER(my_handler));
+ *   IPC_ACTOR_DEFINE(my_actor, "my_actor", 1024, 5, 4);
  *   int rc = ipc_start_all_actors();
  */
