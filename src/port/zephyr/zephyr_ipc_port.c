@@ -3,9 +3,10 @@
  *
  * k_msgq + k_poll_signal + k_work_delayable + k_thread.
  *
- * Actors declared with IPC_ACTOR_DEFINE() bring exact-size,
- * compile-time-declared k_thread stack and k_msgq storage. No actor
- * stack/msgq pool is reserved by the port.
+ * Actors declared with IPC_ACTOR_DEFINE() bring compile-time-declared
+ * k_thread stack and k_msgq storage. Zephyr may add architecture-specific
+ * stack overhead, so the port stores the usable K_THREAD_STACK_SIZEOF() value.
+ * No actor stack/msgq pool is reserved by the port.
  */
 #include "ipc.h"
 #include "ipc_port.h"
@@ -177,8 +178,8 @@ int ipc_port_actor_init(struct ipc_actor *a)
         return -EINVAL;
     }
 
-    /* Static actor macros declare exact-size resources. Treat cfg
-     * mismatches as programming errors rather than silently using a
+    /* Static actor macros declare resources and record their usable limits.
+     * Treat cfg mismatches as programming errors rather than silently using a
      * different limit than the storage was declared for. */
     if (stack_size != static_res->stack_size || queue_depth != static_res->queue_depth) {
         return -EINVAL;
