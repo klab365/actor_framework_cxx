@@ -3,12 +3,14 @@
  *
  * k_msgq + k_poll_signal + k_work_delayable + k_thread.
  *
- * Actors declared with IPC_ACTOR_DEFINE() bring exact-size,
- * compile-time-declared k_thread stack and k_msgq storage. No actor
- * stack/msgq pool is reserved by the port.
+ * Actors declared with IPC_ACTOR_DEFINE() bring compile-time-declared
+ * k_thread stack and k_msgq storage. Zephyr may add architecture-specific
+ * stack overhead, so the port stores the usable K_THREAD_STACK_SIZEOF() value.
+ * No actor stack/msgq pool is reserved by the port.
  */
 #include "ipc.h"
 #include "ipc_port.h"
+#include "ipc_port_state.h"
 
 #include <errno.h>
 #include <string.h>
@@ -39,22 +41,9 @@ void ipc_port_table_unlock(void)
 
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
-struct ipc_port_state {
-    struct k_msgq msgq;
-    struct k_poll_signal signal;
-    struct k_thread thread;
-    k_thread_stack_t *stack;
-    struct k_work_delayable delayed_work;
-    struct ipc_msg delayed_msg;
-    struct ipc_actor *owner;
-};
-
-_Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
-               "Increase ipc_port_state_t opaque storage for Zephyr port state");
-
 static struct ipc_port_state *port_of(struct ipc_actor *a)
 {
-    return (struct ipc_port_state *) (void *) &a->port;
+    return (struct ipc_port_state *) a->port;
 }
 
 /* ── Per-actor static resources ────────────────────────────────────────────
@@ -177,8 +166,8 @@ int ipc_port_actor_init(struct ipc_actor *a)
         return -EINVAL;
     }
 
-    /* Static actor macros declare exact-size resources. Treat cfg
-     * mismatches as programming errors rather than silently using a
+    /* Static actor macros declare resources and record their usable limits.
+     * Treat cfg mismatches as programming errors rather than silently using a
      * different limit than the storage was declared for. */
     if (stack_size != static_res->stack_size || queue_depth != static_res->queue_depth) {
         return -EINVAL;

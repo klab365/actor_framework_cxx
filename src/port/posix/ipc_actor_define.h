@@ -7,6 +7,8 @@
  */
 #pragma once
 
+#include "ipc_port_state.h"
+
 struct ipc_actor;
 
 #ifdef __cplusplus
@@ -24,6 +26,7 @@ void _ipc_actor_register_static(struct ipc_actor *actor);
 #define IPC_ACTOR_DEFINE(actor_sym, actor_name, handler_fn, stack_sz, prio, qdepth)       \
     _Static_assert((stack_sz) > 0, #actor_sym ": stack_size must be positive");           \
     _Static_assert((qdepth) > 0, #actor_sym ": queue_depth must be positive");            \
+    static struct ipc_port_state actor_sym##_port_state;                                  \
     static struct ipc_actor actor_sym = {                                                 \
         .name    = (actor_name),                                                          \
         .handler = (handler_fn),                                                          \
@@ -33,6 +36,7 @@ void _ipc_actor_register_static(struct ipc_actor *actor);
                 .priority    = (prio),                                                    \
                 .queue_depth = (qdepth),                                                  \
             },                                                                            \
+        .port  = &(actor_sym##_port_state),                                               \
         ._next = NULL,                                                                    \
     };                                                                                    \
     static __attribute__((constructor(101))) void actor_sym##_register_static_actor(void) \

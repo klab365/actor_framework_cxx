@@ -3,7 +3,6 @@
 
 #include <assert.h>
 #include <errno.h>
-#include <ipc_actor_define.h>
 #include <ipc_config.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -15,7 +14,7 @@ extern "C" {
 
 /* ── Configuration ─────────────────────────────────────────────────────── */
 
-/* IPC_PAYLOAD_SIZE is the only public sizing knob. Consumers may
+/* IPC_PAYLOAD_SIZE controls inline message payload bytes. Consumers may
  * override it per translation unit (define before #include <ipc.h>)
  * or globally (-D on the command line). Zephyr users may set
  * CONFIG_ACTOR_PAYLOAD_SIZE; the port-side ipc_config.h maps it to
@@ -76,11 +75,6 @@ struct ipc_actor_cfg {
  */
 typedef void (*ipc_actor_handler_t)(struct ipc_actor *self, const struct ipc_msg *msg);
 
-typedef struct {
-    /* Opaque platform-specific state for the actor's port implementation. */
-    uintptr_t _opaque[64];
-} ipc_port_state_t;
-
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
 
 struct ipc_actor {
@@ -90,11 +84,13 @@ struct ipc_actor {
     ipc_actor_handler_t handler;
     /** Stack size, priority, queue depth */
     struct ipc_actor_cfg cfg;
-    /** Opaque platform state */
-    ipc_port_state_t port;
+    /** Opaque platform state owned by the active port implementation. */
+    void *port;
     /** Linked list of all actors, for ipc_start_all_actors() */
     struct ipc_actor *_next;
 };
+
+#include <ipc_actor_define.h>
 
 /* ── Message definition macros ──────────────────────────────────────────── */
 

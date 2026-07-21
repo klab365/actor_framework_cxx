@@ -10,8 +10,7 @@
  *   - send can be made to fail (-ENOMEM) by toggling fail_next_send
  *   - send_after can record the requested delay without actually waiting
  *   - handlers can be invoked synchronously from send via mock_invoke_handlers
- *   - per-actor port_state is a real, zeroed ipc_port_state_t sized blob
- *     so the static_asserts in ipc_port.h still hold
+ *   - per-actor mock state is kept in a separate test-only slot table
  */
 #pragma once
 

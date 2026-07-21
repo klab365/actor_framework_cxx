@@ -1,9 +1,9 @@
 /*
  * ipc_config.h — Zephyr port IPC configuration shim.
  *
- * Only message payload size is user-configurable. Actor stack/queue storage
- * is declared per actor by IPC_ACTOR_DEFINE(). Other capacities are private
- * fixed implementation constants.
+ * Message payload size is user-configurable. Actor stack/queue storage and
+ * per-actor port state are declared per actor by IPC_ACTOR_DEFINE(). Other
+ * capacities are private fixed implementation constants.
  */
 #pragma once
 
