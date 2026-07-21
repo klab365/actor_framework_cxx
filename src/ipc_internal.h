@@ -52,6 +52,6 @@ static inline uint32_t _ipc_fnv1a(const char *s)
 void _ipc_reset_for_testing(void);
 
 /* Registers a statically defined actor in the core actor list.
- * Called by IPC_ACTOR_DEFINE-generated constructors; tests may call
- * it after _ipc_reset_for_testing() because constructors do not rerun. */
+ * Called by IPC_ACTOR_DEFINE-generated startup hooks; tests may call
+ * it after _ipc_reset_for_testing() because startup hooks do not rerun. */
 void _ipc_actor_register_static(struct ipc_actor *actor);

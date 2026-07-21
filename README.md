@@ -326,7 +326,8 @@ under `src/` is implementation detail and not exported to consumers.
 ## Design notes
 
 - **No linker scripts** — the registry is a simple linked list built by
-  static actor-definition constructors and walked by name lookup.
+  port-specific static actor startup hooks (POSIX constructors, Zephyr
+  `SYS_INIT`) and walked by name lookup.
 - **No `extern struct ipc_actor`** — `ipc_send` and `ipc_publish` route
   via the message ID; consumers never need a reference to the target actor.
 - **Lazy ID init** — message descriptor `.id` is FNV-1a-hashed from

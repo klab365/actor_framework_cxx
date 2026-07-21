@@ -91,10 +91,10 @@ void _ipc_actor_register_static(struct ipc_actor *actor)
 {
     actor->_next          = NULL;
 
-    /* Static actor constructors run during process/kernel startup before
+    /* Static actor startup hooks run during process/kernel startup before
      * application concurrency begins, so keep this registration path free
      * of port locks (some ports' kernel primitives are not ready during
-     * C constructors). */
+     * early startup). */
     struct ipc_actor **pp = &_ipc_actor_list;
     while (*pp) {
         if (*pp == actor) {
