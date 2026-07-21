@@ -12,6 +12,25 @@
 
 #include "ipc.h"
 
+#ifdef __cplusplus
+enum class ipc_core_limit : size_t {
+    max_registrations    = 32,
+    max_subscriptions    = 32,
+    max_inflight_queries = 16,
+};
+
+inline constexpr size_t IPC_CORE_MAX_REGISTRATIONS =
+    static_cast<size_t>(ipc_core_limit::max_registrations);
+inline constexpr size_t IPC_CORE_MAX_SUBSCRIPTIONS =
+    static_cast<size_t>(ipc_core_limit::max_subscriptions);
+inline constexpr size_t IPC_CORE_MAX_INFLIGHT_QUERIES =
+    static_cast<size_t>(ipc_core_limit::max_inflight_queries);
+#else
+#define IPC_CORE_MAX_REGISTRATIONS 32
+#define IPC_CORE_MAX_SUBSCRIPTIONS 32
+#define IPC_CORE_MAX_INFLIGHT_QUERIES 16
+#endif
+
 /* ── FNV-1a hash (used internally for lazy descriptor ID initialisation) ── */
 
 static inline uint32_t _ipc_fnv1a(const char *s)
@@ -31,3 +50,8 @@ static inline uint32_t _ipc_fnv1a(const char *s)
  * never call this.
  */
 void _ipc_reset_for_testing(void);
+
+/* Registers a statically defined actor in the core actor list.
+ * Called by IPC_ACTOR_DEFINE-generated constructors; tests may call
+ * it after _ipc_reset_for_testing() because constructors do not rerun. */
+void _ipc_actor_register_static(struct ipc_actor *actor);

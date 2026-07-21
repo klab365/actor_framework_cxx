@@ -10,7 +10,6 @@
  *   - send can be made to fail (-ENOMEM) by toggling fail_next_send
  *   - send_after can record the requested delay without actually waiting
  *   - handlers can be invoked synchronously from send via mock_invoke_handlers
- *     (lets query/reply tests exercise the full ipc.c round-trip)
  *   - per-actor port_state is a real, zeroed ipc_port_state_t sized blob
  *     so the static_asserts in ipc_port.h still hold
  */
@@ -48,23 +47,6 @@ void mock_port_reset(void); /* clear call logs but keep registrations */
 /* Per-actor accessors. */
 mock_actor_state_t *mock_port_actor_state(struct ipc_actor *a);
 
-/* Query-wait control. When mock_block_query is non-zero,
- * ipc_port_query_wait_block returns -ETIMEDOUT without waiting. */
-void mock_port_set_block_timeout(bool enabled);
-
-/*
- * When enabled, ipc_port_query_wait_block waits on an internal
- * condvar until either ipc_port_query_wait_wake is called for the
- * same wait blob (status = 0) or the per-call timeout expires
- * (-ETIMEDOUT). The default (disabled) is the legacy behaviour:
- * block returns -ETIMEDOUT synchronously unless the wait blob is
- * already in the done state.
- *
- * Used to accumulate multiple in-flight queries from multiple
- * threads so the wait-table overflow path can be exercised
- * deterministically. */
-void mock_port_set_block_should_wait(bool enabled);
-
 /* Programmable send behaviour. */
 void mock_port_set_send_should_fail(bool enabled);
 
@@ -91,8 +73,7 @@ void mock_port_set_next_send_after_rc(int rc);
 void mock_port_set_next_start_should_fail(struct ipc_actor *a);
 
 /* If true, ipc_port_send will synchronously invoke the target actor's
- * handler from the calling thread before returning. Useful for query/reply
- * tests where we want a deterministic single-threaded round-trip. */
+ * handler from the calling thread before returning. */
 void mock_port_set_invoke_handlers(bool enabled);
 
 /* Returned by ipc_port_run_all. Programmable so tests can simulate

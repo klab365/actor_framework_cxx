@@ -62,16 +62,17 @@ IPC_HANDLE(LedBlink, led_blink_handler)
     }
 }
 
-IPC_HANDLE(GetLedState, get_led_state_handler)
+IPC_HANDLE(GetLedStateRequest, get_led_state_handler)
 {
     (void) self;
-    (void) msg;
-    GetLedState_response_t resp = {
+    (void) raw_msg;
+    GetLedStateResponse_payload_t resp = {
+        .channel    = msg->channel,
         .on         = g_disabled ? 0 : 1,
         .brightness = 80,
         .on_time_ms = 12345,
     };
-    ipc_reply(raw_msg, GetLedState, resp);
+    ipc_send(GetLedStateResponse, resp);
 }
 
 IPC_HANDLE(LedFault, led_fault_handler)
@@ -91,31 +92,23 @@ static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
     IPC_DISPATCH_TO(msg, LedOn, led_on_handler)
     IPC_DISPATCH_TO(msg, LedOff, led_off_handler)
     IPC_DISPATCH_TO(msg, LedBlink, led_blink_handler)
-    IPC_DISPATCH_TO(msg, GetLedState, get_led_state_handler)
+    IPC_DISPATCH_TO(msg, GetLedStateRequest, get_led_state_handler)
     IPC_DISPATCH_TO(msg, LedFault, led_fault_handler)
-    { /* unknown */
-    }
+    IPC_DISPATCH_IGNORE_UNKNOWN();
 }
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-static struct ipc_actor led_actor;
+IPC_ACTOR_DEFINE(led_actor, "led", led_handler, 512, 5, 8);
 
 int led_actor_module_init(void)
 {
-    struct ipc_actor_cfg cfg = {
-        .stack_size  = 512,
-        .priority    = 5,
-        .queue_depth = 8,
-    };
-    ipc_actor_init(&led_actor, "led", led_handler, cfg);
-
     // registering handlers for actor.
-    IPC_REGISTER(&led_actor, LedOn);
-    IPC_REGISTER(&led_actor, LedOff);
-    IPC_REGISTER(&led_actor, LedBlink);
-    IPC_REGISTER(&led_actor, GetLedState);
-    IPC_SUBSCRIBE(&led_actor, LedFault);
+    ipc_register(&led_actor, &LedOn);
+    ipc_register(&led_actor, &LedOff);
+    ipc_register(&led_actor, &LedBlink);
+    ipc_register(&led_actor, &GetLedStateRequest);
+    ipc_subscribe(&led_actor, &LedFault);
 
     return 0;
 }

@@ -1,7 +1,7 @@
 /*
  * led_actor.h — Message type definitions handled by the LED actor.
  *
- * Includes messages owned by the LED actor (CMD/QUERY) and cross-actor
+ * Includes commands owned by the LED actor and cross-actor
  * events that the LED subsystem publishes or consumes (LedFault).
  */
 #pragma once
@@ -14,13 +14,13 @@ IPC_CMD_DEFINE(LedBlink, {
     uint8_t brightness;
 });
 
-IPC_QUERY_DEFINE(
-    GetLedState, { uint8_t channel; },
-    {
-        uint8_t on;
-        uint8_t brightness;
-        uint32_t on_time_ms;
-    });
+IPC_CMD_DEFINE(GetLedStateRequest, { uint8_t channel; });
+IPC_CMD_DEFINE(GetLedStateResponse, {
+    uint8_t channel;
+    uint8_t on;
+    uint8_t brightness;
+    uint32_t on_time_ms;
+});
 
 /* Hardware/driver fault notification. Channel identifies the source. */
 IPC_EVENT_DEFINE(LedFault, {

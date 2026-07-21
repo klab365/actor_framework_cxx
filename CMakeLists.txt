@@ -62,19 +62,22 @@ endif()
 
 if(IPC_PLATFORM STREQUAL "zephyr")
     target_sources(ipc PRIVATE src/port/zephyr/zephyr_ipc_port.c)
-    # Zephyr port private headers (ipc_config.h and ipc_port.h) are needed
-    # when compiling the Zephyr implementation.
-    target_include_directories(ipc SYSTEM BEFORE PRIVATE
+    # Zephyr port headers are part of the selected public surface because
+    # <ipc.h> includes the port-provided ipc_actor_define.h shim.
+    target_include_directories(ipc SYSTEM BEFORE PUBLIC
         src/port/zephyr
+    )
+    target_include_directories(ipc PRIVATE
         src
     )
-    # The Zephyr port manages each actor's msgq buffer and k_thread
-    # stack internally (a static pool keyed on CONFIG_ACTOR_MAX_ACTORS,
-    # see zephyr_ipc_port.c).  Consumers don't need to supply them,
-    # and nothing under src/port/zephyr/ is exposed as PUBLIC: the
-    # public surface is just <ipc.h> + <ipc_defaults.h>.
+    # The Zephyr port include directory is intentionally before include/:
+    # <ipc.h> resolves ipc_config.h and ipc_actor_define.h through the
+    # selected port, keeping platform branches out of the public header.
 else()
     target_sources(ipc PRIVATE src/port/posix/posix_ipc_port.c)
+    target_include_directories(ipc BEFORE PUBLIC
+        src/port/posix
+    )
     target_include_directories(ipc PRIVATE src)
     find_package(Threads REQUIRED)
     target_link_libraries(ipc PUBLIC Threads::Threads)

@@ -3,6 +3,8 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <ipc_actor_define.h>
+#include <ipc_config.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -11,42 +13,28 @@
 extern "C" {
 #endif
 
-/* Timeout API is platform-agnostic: milliseconds + FOREVER sentinel. */
-typedef uint32_t ipc_timeout_t;
-#define IPC_TIMEOUT_MS(ms) ((ipc_timeout_t) (ms))
-#define IPC_TIMEOUT_FOREVER ((ipc_timeout_t) UINT32_MAX)
-
 /* ── Configuration ─────────────────────────────────────────────────────── */
 
-/* Tunable sizing constants.  Every IPC_* macro used in the public type
- * definitions below comes from ipc_defaults.h.  Consumers may override
- * any of them per-translation-unit (define before #include <ipc.h>) or
- * globally (-D on the command line).  Zephyr users should set the
- * matching CONFIG_ACTOR_* symbol in Kconfig; the port-side overlay at
- * src/port/zephyr/ipc_config.h propagates those values into the IPC_*
- * macros before the public defaults are consulted.  See the docstring
- * at the top of ipc_defaults.h for the full override precedence list.
+/* IPC_PAYLOAD_SIZE is the only public sizing knob. Consumers may
+ * override it per translation unit (define before #include <ipc.h>)
+ * or globally (-D on the command line). Zephyr users may set
+ * CONFIG_ACTOR_PAYLOAD_SIZE; the port-side ipc_config.h maps it to
+ * IPC_PAYLOAD_SIZE before the public default is consulted.
  */
-#ifdef __ZEPHYR__
-#include "ipc_config.h"
-#else
-#include "ipc_defaults.h"
-#endif
 
 /* ── Message kinds ──────────────────────────────────────────────────────── */
 
 typedef enum {
     IPC_EVENT = 0,
     IPC_CMD,
-    IPC_QUERY,
 } ipc_msg_kind_t;
 
 /* ── Message descriptor ─────────────────────────────────────────────────
  *
  * NOTE: NOT const — the .id field is zero-initialized in the macro and
  * computed lazily from .name (FNV-1a) on first register/subscribe/send.
- * All registration happens single-threaded during the module's
- * ipc_actor_init() call (which also spawns the actor's thread).
+ * Actors are declared statically with IPC_ACTOR_DEFINE(); registration
+ * happens during startup before ipc_start_all_actors().
  * ─────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -68,8 +56,6 @@ struct ipc_msg {
     ipc_msg_kind_t kind;
     /** Message payload */
     uint8_t payload[IPC_PAYLOAD_SIZE];
-    /** Internal use (QUERY only) */
-    void *_wait;
 };
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
@@ -92,7 +78,7 @@ typedef void (*ipc_actor_handler_t)(struct ipc_actor *self, const struct ipc_msg
 
 typedef struct {
     /* Opaque platform-specific state for the actor's port implementation. */
-    uintptr_t _opaque[IPC_PORT_STATE_WORDS];
+    uintptr_t _opaque[64];
 } ipc_port_state_t;
 
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
@@ -106,7 +92,7 @@ struct ipc_actor {
     struct ipc_actor_cfg cfg;
     /** Opaque platform state */
     ipc_port_state_t port;
-    /** Linked list of all actors, for ipc_start_all_threads() */
+    /** Linked list of all actors, for ipc_start_all_actors() */
     struct ipc_actor *_next;
 };
 
@@ -128,20 +114,6 @@ struct ipc_actor {
         .kind = IPC_CMD,                                              \
         .size = sizeof(TypeName##_payload_t),                         \
         .name = #TypeName,                                            \
-    }
-
-#define IPC_QUERY_DEFINE(TypeName, ReqFields, RespFields)                \
-    typedef struct ReqFields TypeName##_payload_t;                       \
-    typedef struct RespFields TypeName##_response_t;                     \
-    static_assert(sizeof(TypeName##_payload_t) <= IPC_PAYLOAD_SIZE,      \
-                  #TypeName " QUERY request exceeds IPC_PAYLOAD_SIZE");  \
-    static_assert(sizeof(TypeName##_response_t) <= IPC_PAYLOAD_SIZE,     \
-                  #TypeName " QUERY response exceeds IPC_PAYLOAD_SIZE"); \
-    static ipc_msg_desc_t TypeName __attribute__((unused)) = {           \
-        .id   = 0,                                                       \
-        .kind = IPC_QUERY,                                               \
-        .size = sizeof(TypeName##_payload_t),                            \
-        .name = #TypeName,                                               \
     }
 
 /**
@@ -191,13 +163,20 @@ struct ipc_actor {
         handler_fn(self, __ipc_typed, __ipc_raw);                            \
     } else
 
-/* ── Registration / subscription macros ─────────────────────────────────── */
+/*
+ * IPC_UNKNOWN({ ... });
+ * IPC_DISPATCH_IGNORE_UNKNOWN();
+ *
+ * Terminate an IPC_DISPATCH_TO chain. IPC_UNKNOWN runs caller-provided
+ * statements for unmatched message IDs; IPC_DISPATCH_IGNORE_UNKNOWN drops
+ * unmatched messages intentionally.
+ */
+#define IPC_UNKNOWN(...) __VA_ARGS__
+#define IPC_DISPATCH_IGNORE_UNKNOWN() \
+    {                                 \
+    }
 
-#define IPC_REGISTER(actor, MsgType) ipc_register((actor), &(MsgType))
-#define IPC_SUBSCRIBE(actor, MsgType) ipc_subscribe((actor), &(MsgType))
-#define IPC_UNSUBSCRIBE(actor, MsgType) ipc_unsubscribe((actor), &(MsgType))
-
-/* ── Send / publish / query macros ──────────────────────────────────────── */
+/* ── Send / publish macros ──────────────────────────────────────────────── */
 
 /*
  * All send-style macros take the payload as a single, fully-typed
@@ -206,11 +185,6 @@ struct ipc_actor {
  *
  *     ipc_send(LedOn, (LedOn_payload_t){.brightness = 50});
  *     ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
- *     ipc_query(GetLedState, &state, IPC_TIMEOUT_MS(100),
- *               (GetLedState_payload_t){.channel = 0});
- *     ipc_reply(raw_msg, GetLedState,
- *               (GetLedState_response_t){.on = 1, .brightness = 80, .on_time_ms = 12345});
- *
  * The macro takes the address of the user-supplied expression, so named
  * variables are equally fine:
  *
@@ -218,9 +192,8 @@ struct ipc_actor {
  *     ipc_send(LedOn, p);
  *
  * Internally the macro calls the corresponding *_raw function. The
- * `MsgType` symbol is required because the macro needs both the
- * descriptor (for the wire id/kind/size) and, for query/reply, the
- * response type's size.
+ * `MsgType` symbol is required because the macro needs the descriptor
+ * (for the wire id/kind/size).
  */
 #define ipc_send(MsgType, payload) ipc_send_raw(&(MsgType), &(payload))
 
@@ -229,13 +202,19 @@ struct ipc_actor {
 
 #define ipc_publish(MsgType, payload) ipc_publish_raw(&(MsgType), &(payload))
 
-#define ipc_query(MsgType, response_ptr, timeout, payload) \
-    ipc_query_raw(&(MsgType), &(payload), (response_ptr), sizeof(MsgType##_response_t), (timeout))
-
-/* ── Reply macro ────────────────────────────────────────────────────────── */
-
-#define ipc_reply(raw_msg, MsgType, response) \
-    ipc_reply_raw((raw_msg), &(response), sizeof(MsgType##_response_t))
+/*
+ * Interrupt-context-safe event publish. This path never takes the IPC
+ * registry mutex and uses the active port's non-blocking send primitive.
+ * Contract:
+ * - valid only after ipc_start_all_actors() has frozen registration;
+ * - MsgType must already have a non-zero id, usually by ipc_subscribe()
+ *   during startup;
+ * - it never blocks, but can fail if a subscriber queue is full;
+ * - fan-out cost is O(number of subscriptions), so keep interrupt events small;
+ * - the active port must make ipc_port_send() safe for its interrupt context.
+ */
+#define IPC_ISR_PUBLISH(MsgType, payload) ipc_publish_isr_raw(&(MsgType), &(payload))
+#define ipc_publish_isr(MsgType, payload) IPC_ISR_PUBLISH(MsgType, payload)
 
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 
@@ -248,16 +227,12 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
 /** Publish a message to all subscribed actors */
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
 
-/** Query an actor and wait for a response */
-int ipc_query_raw(ipc_msg_desc_t *desc, const void *payload, void *response, size_t resp_size,
-                  ipc_timeout_t timeout);
-
-/** Reply to a query */
-void ipc_reply_raw(const struct ipc_msg *msg, const void *response, size_t len);
+/** Interrupt-context-safe publish variant; see IPC_ISR_PUBLISH contract above. */
+int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload);
 
 /* ── Registration API ───────────────────────────────────────────────────── */
 
-/** Register an actor to handle a specific message descriptor. */
+/** Register an actor to handle a CMD descriptor. */
 int ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /*
@@ -265,7 +240,7 @@ int ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
  * ipc_publish(): every actor subscribed to the event receives a copy
  * of the published message in its own inbox.
  *
- * - `desc->kind` must be IPC_EVENT; subscribing a CMD/QUERY descriptor
+ * - `desc->kind` must be IPC_EVENT; subscribing a CMD descriptor
  *   is a programming error and asserts in debug builds. Use
  *   ipc_register for CMDs and QUERIES.
  * - `ipc_subscribe` is idempotent for the same (actor, MsgType) pair:
@@ -287,12 +262,8 @@ int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /* ── Actor lifecycle ────────────────────────────────────────────────────── */
 
-/** Initialize an actor */
-int ipc_actor_init(struct ipc_actor *actor, const char *name, ipc_actor_handler_t handler,
-                   struct ipc_actor_cfg cfg);
-
-/** Start all actor threads */
-int ipc_start_all_threads(void);
+/** Initialize/start all statically defined actors */
+int ipc_start_all_actors(void);
 
 /*
  * Block until every actor has exited. On POSIX this is the join phase
@@ -321,3 +292,13 @@ void ipc_stop_all(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* ── Static actor declaration ──────────────────────────────────────────────
+ *
+ * IPC_ACTOR_DEFINE is selected by the active port's include directory.
+ * It fully declares an actor statically. Runtime startup is a single
+ * call to ipc_start_all_actors():
+ *
+ *   IPC_ACTOR_DEFINE(my_actor, "my_actor", my_handler, 1024, 5, 4);
+ *   int rc = ipc_start_all_actors();
+ */

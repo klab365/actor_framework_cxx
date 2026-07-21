@@ -1,57 +1,131 @@
 #include <ipc.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
 IPC_CMD_DEFINE(BasicPing, { uint32_t count; });
+IPC_CMD_DEFINE(BasicPong, { uint32_t count; });
+IPC_CMD_DEFINE(BasicStatusRequest, { uint32_t request_id; });
+IPC_CMD_DEFINE(BasicStatusResponse, {
+    uint32_t request_id;
+    uint32_t ping_count;
+    uint32_t pong_count;
+});
 
-static struct ipc_actor basic_actor;
+static atomic_uint basic_ping_count;
+static atomic_uint basic_pong_count;
 
 IPC_HANDLE(BasicPing, on_basic_ping)
+{
+    ARG_UNUSED(self);
+
+    atomic_fetch_add_explicit(&basic_ping_count, 1U, memory_order_relaxed);
+    printk("ipc basic: ping %u\n", msg->count);
+
+    BasicPong_payload_t payload = {.count = msg->count};
+    int rc                      = ipc_send(BasicPong, payload);
+    if (rc != 0) {
+        printk("ipc basic: pong send failed: %d\n", rc);
+    }
+}
+
+IPC_HANDLE(BasicPong, on_basic_pong)
 {
     (void) self;
     (void) raw_msg;
 
-    printk("ipc basic: ping %u\n", msg->count);
+    atomic_fetch_add_explicit(&basic_pong_count, 1U, memory_order_relaxed);
+    printk("ipc basic: pong %u\n", msg->count);
 
     if (msg->count < 5U) {
         BasicPing_payload_t payload = {.count = msg->count + 1U};
-        ipc_send_after(BasicPing, 1000U, payload);
+        int rc                      = ipc_send_after(BasicPing, 1000U, payload);
+        if (rc != 0) {
+            printk("ipc basic: next ping schedule failed: %d\n", rc);
+        }
     }
 }
 
-static void basic_actor_handler(struct ipc_actor *self, const struct ipc_msg *msg)
+IPC_HANDLE(BasicStatusRequest, on_basic_status_request)
+{
+    (void) self;
+    (void) raw_msg;
+
+    BasicStatusResponse_payload_t response = {
+        .request_id = msg->request_id,
+        .ping_count = atomic_load_explicit(&basic_ping_count, memory_order_relaxed),
+        .pong_count = atomic_load_explicit(&basic_pong_count, memory_order_relaxed),
+    };
+    printk("ipc basic: status request %u -> ping=%u pong=%u\n", response.request_id,
+           response.ping_count, response.pong_count);
+    ipc_send(BasicStatusResponse, response);
+}
+
+IPC_HANDLE(BasicStatusResponse, on_basic_status_response)
+{
+    (void) self;
+    (void) raw_msg;
+
+    printk("ipc basic: status response request=%u ping=%u pong=%u\n", msg->request_id,
+           msg->ping_count, msg->pong_count);
+}
+
+static void ping_actor_handler(struct ipc_actor *self, const struct ipc_msg *msg)
+{
+    IPC_DISPATCH_TO(msg, BasicPong, on_basic_pong)
+    IPC_DISPATCH_TO(msg, BasicStatusResponse, on_basic_status_response)
+    IPC_UNKNOWN({ printk("ipc basic: ping actor unknown message id=0x%08x\n", msg->id); });
+}
+
+static void pong_actor_handler(struct ipc_actor *self, const struct ipc_msg *msg)
 {
     IPC_DISPATCH_TO(msg, BasicPing, on_basic_ping)
-    {
-        printk("ipc basic: unknown message id=0x%08x\n", msg->id);
-    }
+    IPC_DISPATCH_TO(msg, BasicStatusRequest, on_basic_status_request)
+    IPC_UNKNOWN({ printk("ipc basic: pong actor unknown message id=0x%08x\n", msg->id); });
 }
+
+/* Each actor declares exact-size static stack/msgq storage via ipc.h. */
+IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", ping_actor_handler, 1024, K_PRIO_PREEMPT(7), 4);
+IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", pong_actor_handler, 2048, K_PRIO_PREEMPT(7), 4);
 
 static int basic_actor_init(void)
 {
-    struct ipc_actor_cfg cfg = {
-        .stack_size  = 1024,
-        .priority    = K_PRIO_PREEMPT(7),
-        .queue_depth = 4,
-    };
-    int rc = ipc_actor_init(&basic_actor, "ipc_basic", basic_actor_handler, cfg);
+    int rc = ipc_register(&ping_actor, &BasicPong);
     if (rc != 0) {
-        printk("ipc basic: actor init failed: %d\n", rc);
+        printk("ipc basic: BasicPong register failed: %d\n", rc);
         return rc;
     }
 
-    rc = IPC_REGISTER(&basic_actor, BasicPing);
+    rc = ipc_register(&pong_actor, &BasicPing);
     if (rc != 0) {
-        printk("ipc basic: register failed: %d\n", rc);
+        printk("ipc basic: BasicPing register failed: %d\n", rc);
+        return rc;
+    }
+
+    rc = ipc_register(&pong_actor, &BasicStatusRequest);
+    if (rc != 0) {
+        printk("ipc basic: BasicStatusRequest register failed: %d\n", rc);
+        return rc;
+    }
+
+    rc = ipc_register(&ping_actor, &BasicStatusResponse);
+    if (rc != 0) {
+        printk("ipc basic: BasicStatusResponse register failed: %d\n", rc);
+        return rc;
+    }
+
+    rc = ipc_start_all_actors();
+    if (rc != 0) {
+        printk("ipc basic: actor start failed: %d\n", rc);
         return rc;
     }
 
     BasicPing_payload_t payload = {.count = 1U};
     rc                          = ipc_send(BasicPing, payload);
     if (rc != 0) {
-        printk("ipc basic: initial send failed: %d\n", rc);
+        printk("ipc basic: initial ping send failed: %d\n", rc);
         return rc;
     }
 
@@ -64,16 +138,24 @@ int main(void)
 {
     printk("IPC Actor Framework basic Zephyr example\n");
 
-    /* The actor re-arms itself once per second until ping 5.  Stop the
-     * actor thread afterwards so native_sim can terminate cleanly instead
-     * of sitting forever in the actor's k_poll() loop.
+    /* The actors exchange ping/pong once per second until ping 5. Ask the
+     * pong actor for status via async request/response before stopping the
+     * actor threads so native_sim can terminate cleanly.
      */
     k_sleep(K_SECONDS(6));
+
+    BasicStatusRequest_payload_t request = {.request_id = 1U};
+    int rc                               = ipc_send(BasicStatusRequest, request);
+    if (rc != 0) {
+        printk("ipc basic: status request failed: %d\n", rc);
+    }
+    k_sleep(K_MSEC(100));
+
     ipc_stop_all();
     printk("zephyr-basic OK\n");
 
     /* native_sim keeps the Zephyr kernel/idle thread alive after main()
-     * returns.  Use the host exit path so `west build -t run` terminates.
+     * returns. Use the host exit path so `west build -t run` terminates.
      */
     exit(0);
 }
