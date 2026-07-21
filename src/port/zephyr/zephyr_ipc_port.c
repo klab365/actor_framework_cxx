@@ -16,29 +16,6 @@
 #include <string.h>
 #include <zephyr/kernel.h>
 
-/* ── Table mutex ─────────────────────────────────────────────────────────── */
-
-static struct k_mutex table_mutex;
-static bool table_inited;
-
-static void table_init_once(void)
-{
-    if (!table_inited) {
-        k_mutex_init(&table_mutex);
-        table_inited = true;
-    }
-}
-
-void ipc_port_table_lock(void)
-{
-    table_init_once();
-    k_mutex_lock(&table_mutex, K_FOREVER);
-}
-void ipc_port_table_unlock(void)
-{
-    k_mutex_unlock(&table_mutex);
-}
-
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
 static struct ipc_port_state *port_of(struct ipc_actor *a)
@@ -153,8 +130,6 @@ static void delayed_work_fn(struct k_work *work)
 
 int ipc_port_actor_init(struct ipc_actor *a)
 {
-    table_init_once();
-
     struct ipc_port_state *p                         = port_of(a);
     p->stack                                         = NULL;
 
@@ -206,6 +181,11 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
         k_poll_signal_raise(&p->signal, 0);
     }
     return (rc == 0) ? 0 : -ENOMEM;
+}
+
+int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
+{
+    return ipc_port_send(a, msg);
 }
 
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)

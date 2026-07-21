@@ -11,11 +11,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ── Table lock (registry / registration / subscription tables) ─────────── */
-
-void ipc_port_table_lock(void);
-void ipc_port_table_unlock(void);
-
 /* ── Per-actor lifecycle (unchanged) ─────────────────────────────────────── */
 
 int ipc_port_actor_init(struct ipc_actor *a);
@@ -27,9 +22,10 @@ void ipc_port_stop_actor(struct ipc_actor *a);
 /*
  * ipc_port_send MUST copy `msg` synchronously; it must not retain a
  * pointer to the message. The publish path reuses one struct ipc_msg
- * across all subscribers and releases the table lock between sends.
+ * across all subscribers.
  */
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
+int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg);
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
 
 /* ── Run-all (blocks on POSIX, no-op on Zephyr) ──────────────────────────── */

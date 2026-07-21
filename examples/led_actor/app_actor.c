@@ -1,5 +1,5 @@
 /*
- * app_actor.c — Consumer actor: subscribes to events and sends commands.
+ * app_actor.c — Consumer actor: static event handlers and command sends.
  */
 #include "button_actor.h"
 #include "led_actor.h"
@@ -49,29 +49,18 @@ IPC_HANDLE(ButtonHold, on_hold)
     ipc_send(LedOff, off_cmd);
 }
 
-/* ── Dispatch ────────────────────────────────────────────────────────────── */
-
-static void app_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, LedFault, led_fault_handler)
-    IPC_DISPATCH_TO(msg, GetLedStateResponse, on_led_state)
-    IPC_DISPATCH_TO(msg, ButtonClick, on_click)
-    IPC_DISPATCH_TO(msg, ButtonDoubleClick, on_double_click)
-    IPC_DISPATCH_TO(msg, ButtonHold, on_hold)
-    IPC_DISPATCH_IGNORE_UNKNOWN();
-}
-
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-IPC_ACTOR_DEFINE(app_actor, "app", app_handler, 1024, 4, 32);
+static const struct ipc_actor_handler_entry app_handlers[] = {
+    IPC_ON(LedFault, led_fault_handler), IPC_ON(GetLedStateResponse, on_led_state),
+    IPC_ON(ButtonClick, on_click),       IPC_ON(ButtonDoubleClick, on_double_click),
+    IPC_ON(ButtonHold, on_hold),
+};
+
+IPC_ACTOR_DEFINE(app_actor, "app", 1024, 4, 32, IPC_ACTOR_HANDLERS(app_handlers));
 
 int app_actor_module_init(void)
 {
-    ipc_register(&app_actor, &GetLedStateResponse);
-    ipc_subscribe(&app_actor, &LedFault);
-    ipc_subscribe(&app_actor, &ButtonClick);
-    ipc_subscribe(&app_actor, &ButtonDoubleClick);
-    ipc_subscribe(&app_actor, &ButtonHold);
     return 0;
 }
 

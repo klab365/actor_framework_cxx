@@ -31,7 +31,7 @@ typedef enum {
 /* ── Message descriptor ─────────────────────────────────────────────────
  *
  * NOTE: NOT const — the .id field is zero-initialized in the macro and
- * computed lazily from .name (FNV-1a) on first register/subscribe/send.
+ * computed lazily from .name (FNV-1a) on static route setup or send.
  * Actors are declared statically with IPC_ACTOR_DEFINE(); registration
  * happens during startup before ipc_start_all_actors().
  * ─────────────────────────────────────────────────────────────────────── */
@@ -75,6 +75,14 @@ struct ipc_actor_cfg {
  */
 typedef void (*ipc_actor_handler_t)(struct ipc_actor *self, const struct ipc_msg *msg);
 
+typedef void (*ipc_actor_msg_handler_t)(struct ipc_actor *self, const void *payload,
+                                        const struct ipc_msg *raw_msg);
+
+struct ipc_actor_handler_entry {
+    ipc_msg_desc_t *desc;
+    ipc_actor_msg_handler_t handler;
+};
+
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
 
 struct ipc_actor {
@@ -84,6 +92,9 @@ struct ipc_actor {
     ipc_actor_handler_t handler;
     /** Stack size, priority, queue depth */
     struct ipc_actor_cfg cfg;
+    /** Optional static per-message handler table. */
+    const struct ipc_actor_handler_entry *handlers;
+    size_t handler_count;
     /** Opaque platform state owned by the active port implementation. */
     void *port;
     /** Linked list of all actors, for ipc_start_all_actors() */
@@ -145,6 +156,18 @@ struct ipc_actor {
     static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg, \
                            const struct ipc_msg *raw_msg)
 
+#define IPC_ON(MsgType, handler_fn) \
+    {.desc = &(MsgType), .handler = (ipc_actor_msg_handler_t) (handler_fn)}
+
+#define IPC_ACTOR_RAW_HANDLER(handler_fn) \
+    .handler = (handler_fn), .handlers = NULL, .handler_count = 0
+
+#define IPC_ACTOR_HANDLERS(handlers_arr)                                \
+    .handler = ipc_dispatch_actor_handlers, .handlers = (handlers_arr), \
+    .handler_count = sizeof(handlers_arr) / sizeof((handlers_arr)[0])
+
+void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg);
+
 /*
  * IPC_DISPATCH_TO(raw_msg, MsgType, handler_fn)
  *
@@ -199,15 +222,8 @@ struct ipc_actor {
 #define ipc_publish(MsgType, payload) ipc_publish_raw(&(MsgType), &(payload))
 
 /*
- * Interrupt-context-safe event publish. This path never takes the IPC
- * registry mutex and uses the active port's non-blocking send primitive.
- * Contract:
- * - valid only after ipc_start_all_actors() has frozen registration;
- * - MsgType must already have a non-zero id, usually by ipc_subscribe()
- *   during startup;
- * - it never blocks, but can fail if a subscriber queue is full;
- * - fan-out cost is O(number of subscriptions), so keep interrupt events small;
- * - the active port must make ipc_port_send() safe for its interrupt context.
+ * Interrupt-context-safe event publish. Valid only after ipc_start_all_actors()
+ * and only for EVENT descriptors already present in a static handler table.
  */
 #define IPC_ISR_PUBLISH(MsgType, payload) ipc_publish_isr_raw(&(MsgType), &(payload))
 #define ipc_publish_isr(MsgType, payload) IPC_ISR_PUBLISH(MsgType, payload)
@@ -223,38 +239,8 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
 /** Publish a message to all subscribed actors */
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
 
-/** Interrupt-context-safe publish variant; see IPC_ISR_PUBLISH contract above. */
+/** Interrupt-context-safe publish variant; uses the port ISR send seam. */
 int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload);
-
-/* ── Registration API ───────────────────────────────────────────────────── */
-
-/** Register an actor to handle a CMD descriptor. */
-int ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc);
-
-/*
- * Subscribe an actor to an EVENT descriptor. Events are delivered via
- * ipc_publish(): every actor subscribed to the event receives a copy
- * of the published message in its own inbox.
- *
- * - `desc->kind` must be IPC_EVENT; subscribing a CMD descriptor
- *   is a programming error and asserts in debug builds. Use
- *   ipc_register for CMDs and QUERIES.
- * - `ipc_subscribe` is idempotent for the same (actor, MsgType) pair:
- *   a second call with the same pair is a silent no-op and returns 0
- *   without adding a duplicate row. (Without this, a single
- *   ipc_publish would deliver twice to the same actor.)
- * - Returns 0 on success, -ENOMEM if the subscription table is full.
- *   Duplicate subscriptions do not fail.
- */
-int ipc_subscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
-
-/*
- * Remove a subscription created by ipc_subscribe. The (actor, MsgType)
- * pair must match an existing subscription; otherwise -ENOENT is
- * returned. Idempotency is the inverse of ipc_subscribe: a second
- * call after the first returns -ENOENT (the row is gone).
- */
-int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc);
 
 /* ── Actor lifecycle ────────────────────────────────────────────────────── */
 
@@ -295,6 +281,7 @@ void ipc_stop_all(void);
  * It fully declares an actor statically. Runtime startup is a single
  * call to ipc_start_all_actors():
  *
- *   IPC_ACTOR_DEFINE(my_actor, "my_actor", my_handler, 1024, 5, 4);
+ *   IPC_ACTOR_DEFINE(my_actor, "my_actor", 1024, 5, 4,
+ *                    IPC_ACTOR_RAW_HANDLER(my_handler));
  *   int rc = ipc_start_all_actors();
  */

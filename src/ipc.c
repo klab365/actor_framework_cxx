@@ -44,7 +44,7 @@ typedef struct {
 
 static ipc_subscription_t sub_table[IPC_CORE_MAX_SUBSCRIPTIONS];
 static int sub_count;
-static bool registry_frozen;
+static bool actors_started;
 
 /* ── Test reset ─────────────────────────────────────────────────────────── */
 /* See declaration in ipc_internal.h. Production code must never call this. */
@@ -54,7 +54,7 @@ void _ipc_reset_for_testing(void)
     sub_count = 0;
     memset(reg_table, 0, sizeof(reg_table));
     memset(sub_table, 0, sizeof(sub_table));
-    registry_frozen = false;
+    actors_started  = false;
     _ipc_actor_list = NULL;
 }
 
@@ -71,6 +71,66 @@ static void _ipc_ensure_id(ipc_msg_desc_t *d)
     if (!d->id) {
         d->id = _ipc_fnv1a(d->name);
     }
+}
+
+static int register_cmd_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *desc)
+{
+    assert(desc->kind == IPC_CMD);
+    _ipc_ensure_id(desc);
+
+    for (int i = 0; i < reg_count; i++) {
+        if (reg_table[i].msg_id == desc->id) {
+            fprintf(stderr, "ipc: duplicate registration for '%s'\n", desc->name);
+            assert(0 && "duplicate IPC_ON command route");
+            return -EALREADY;
+        }
+    }
+
+    if (reg_count >= IPC_CORE_MAX_REGISTRATIONS) {
+        assert(0 && "IPC command route table full");
+        return -ENOMEM;
+    }
+
+    reg_table[reg_count].msg_id = desc->id;
+    reg_table[reg_count].actor  = actor;
+    reg_count++;
+
+    return 0;
+}
+
+static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *desc)
+{
+    assert(desc->kind == IPC_EVENT);
+    _ipc_ensure_id(desc);
+
+    for (int i = 0; i < sub_count; i++) {
+        if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
+            return 0;
+        }
+    }
+
+    if (sub_count >= IPC_CORE_MAX_SUBSCRIPTIONS) {
+        return -ENOMEM;
+    }
+
+    sub_table[sub_count].msg_id = desc->id;
+    sub_table[sub_count].actor  = actor;
+    sub_count++;
+
+    return 0;
+}
+
+static int register_actor_handlers_unlocked(struct ipc_actor *actor)
+{
+    for (size_t i = 0; i < actor->handler_count; i++) {
+        ipc_msg_desc_t *desc = actor->handlers[i].desc;
+        int rc               = desc->kind == IPC_EVENT ? subscribe_event_unlocked(actor, desc)
+                                                       : register_cmd_unlocked(actor, desc);
+        if (rc) {
+            return rc;
+        }
+    }
+    return 0;
 }
 
 /* ── Helper: find registration ───────────────────────────────────────────── */
@@ -103,107 +163,8 @@ void _ipc_actor_register_static(struct ipc_actor *actor)
         pp = &(*pp)->_next;
     }
     *pp = actor;
-}
 
-/* ── ipc_register ────────────────────────────────────────────────────────── */
-
-int ipc_register(struct ipc_actor *actor, ipc_msg_desc_t *desc)
-{
-    assert(desc->kind == IPC_CMD);
-    _ipc_ensure_id(desc);
-
-    ipc_port_table_lock();
-
-    if (registry_frozen) {
-        ipc_port_table_unlock();
-        return -EPERM;
-    }
-
-    for (int i = 0; i < reg_count; i++) {
-        if (reg_table[i].msg_id == desc->id) {
-            ipc_port_table_unlock();
-            fprintf(stderr, "ipc: duplicate registration for '%s'\n", desc->name);
-            assert(0 && "duplicate ipc_register");
-            return -EALREADY;
-        }
-    }
-
-    if (reg_count >= IPC_CORE_MAX_REGISTRATIONS) {
-        ipc_port_table_unlock();
-        assert(0 && "IPC registration table full");
-        return -ENOMEM;
-    }
-
-    reg_table[reg_count].msg_id = desc->id;
-    reg_table[reg_count].actor  = actor;
-    reg_count++;
-
-    ipc_port_table_unlock();
-    return 0;
-}
-
-/* ── ipc_subscribe / ipc_unsubscribe ─────────────────────────────────────── */
-
-int ipc_subscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc)
-{
-    /* Mirrors ipc_register's kind assertion: only EVENT descriptors may
-     * be subscribed. Subscribing a CMD descriptor is a programming
-     * error — those are routed by ipc_register, not by the publish path. */
-    assert(desc->kind == IPC_EVENT);
-    _ipc_ensure_id(desc);
-    ipc_port_table_lock();
-
-    if (registry_frozen) {
-        ipc_port_table_unlock();
-        return -EPERM;
-    }
-
-    /* Dedup: ipc_subscribe is idempotent for the same (actor, MsgType)
-     * pair. A second call with the same pair returns 0 without adding a
-     * second row, mirroring the find_registered() / reg_table append
-     * style in ipc_register. Without this, a duplicate subscribe would
-     * cause a single publish to deliver to the same actor twice. */
-    for (int i = 0; i < sub_count; i++) {
-        if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
-            ipc_port_table_unlock();
-            return 0;
-        }
-    }
-
-    if (sub_count >= IPC_CORE_MAX_SUBSCRIPTIONS) {
-        ipc_port_table_unlock();
-        return -ENOMEM;
-    }
-
-    sub_table[sub_count].msg_id = desc->id;
-    sub_table[sub_count].actor  = actor;
-    sub_count++;
-
-    ipc_port_table_unlock();
-    return 0;
-}
-
-int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc)
-{
-    _ipc_ensure_id(desc);
-    ipc_port_table_lock();
-
-    if (registry_frozen) {
-        ipc_port_table_unlock();
-        return -EPERM;
-    }
-
-    for (int i = 0; i < sub_count; i++) {
-        if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
-            sub_table[i] = sub_table[sub_count - 1];
-            sub_count--;
-            ipc_port_table_unlock();
-            return 0;
-        }
-    }
-
-    ipc_port_table_unlock();
-    return -ENOENT;
+    (void) register_actor_handlers_unlocked(actor);
 }
 
 /* ── ipc_send_raw ────────────────────────────────────────────────────────── */
@@ -211,9 +172,7 @@ int ipc_unsubscribe(struct ipc_actor *actor, ipc_msg_desc_t *desc)
 int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
 {
     _ipc_ensure_id(desc);
-    ipc_port_table_lock();
     struct ipc_actor *target = find_registered(desc->id);
-    ipc_port_table_unlock();
 
     if (!target) {
         fprintf(stderr, "ipc: send '%s' — not registered\n", desc->name);
@@ -236,9 +195,7 @@ int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
 int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payload)
 {
     _ipc_ensure_id(desc);
-    ipc_port_table_lock();
     struct ipc_actor *target = find_registered(desc->id);
-    ipc_port_table_unlock();
 
     if (!target) {
         fprintf(stderr, "ipc: send_after '%s' — not registered\n", desc->name);
@@ -256,12 +213,26 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
     return ipc_port_send_after(target, &msg, delay_ms);
 }
 
+static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
+                                int (*send_fn)(struct ipc_actor *, const struct ipc_msg *))
+{
+    int first_rc = 0;
+    for (int i = 0; i < sub_count; i++) {
+        if (sub_table[i].msg_id == msg_id) {
+            int rc = send_fn(sub_table[i].actor, msg);
+            if (rc && !first_rc) {
+                first_rc = rc;
+            }
+        }
+    }
+    return first_rc;
+}
+
 /* ── ipc_publish_raw ─────────────────────────────────────────────────────── */
 
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
 {
-    /* Mirrors ipc_register's kind assertion: only EVENT descriptors may
-     * be published. Publishing a CMD descriptor is a programming
+    /* Only EVENT descriptors may be published. Publishing a CMD descriptor is a programming
      * error — those go through ipc_send_raw. Without this assert the code
      * silently overrides msg.kind = IPC_EVENT below, which masks the bug
      * (and would cause a cmd message to be fan-out delivered to event
@@ -277,25 +248,7 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
         memcpy(msg.payload, payload, desc->size);
     }
 
-    int last_rc = 0;
-
-    ipc_port_table_lock();
-    for (int i = 0; i < sub_count; i++) {
-        if (sub_table[i].msg_id == desc->id) {
-            struct ipc_actor *a = sub_table[i].actor;
-            ipc_port_table_unlock();
-            int rc = ipc_port_send(a, &msg);
-            /* Return the FIRST non-zero rc so a later subscriber's
-             * failure cannot mask an earlier one. */
-            if (rc && !last_rc) {
-                last_rc = rc;
-            }
-            ipc_port_table_lock();
-        }
-    }
-    ipc_port_table_unlock();
-
-    return last_rc;
+    return publish_prepared_msg(&msg, desc->id, ipc_port_send);
 }
 
 /* ── ipc_publish_isr_raw ────────────────────────────────────────────────── */
@@ -305,17 +258,9 @@ int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
     if (!desc || desc->kind != IPC_EVENT) {
         return -EINVAL;
     }
-
-    /* Interrupt-context path may not take ipc_port_table_lock(). It is only
-     * safe once ipc_start_all_actors() has frozen registration/subscription
-     * tables, making sub_table immutable for lock-free reads. */
-    if (!registry_frozen) {
+    if (!actors_started) {
         return -EPERM;
     }
-
-    /* Do not lazily initialise descriptor IDs from interrupt context. The
-     * event descriptor must have been touched during startup, typically by
-     * ipc_subscribe(). */
     if (desc->id == 0) {
         return -EINVAL;
     }
@@ -328,27 +273,26 @@ int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
         memcpy(msg.payload, payload, desc->size);
     }
 
-    int first_rc = 0;
-    for (int i = 0; i < sub_count; i++) {
-        if (sub_table[i].msg_id == desc->id) {
-            int rc = ipc_port_send(sub_table[i].actor, &msg);
-            if (rc && !first_rc) {
-                first_rc = rc;
-            }
+    return publish_prepared_msg(&msg, desc->id, ipc_port_send_isr);
+}
+
+/* ── static handler dispatch ────────────────────────────────────────────── */
+
+void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg)
+{
+    for (size_t i = 0; i < self->handler_count; i++) {
+        const struct ipc_actor_handler_entry *entry = &self->handlers[i];
+        if (entry->desc->id == msg->id) {
+            entry->handler(self, msg->payload, msg);
+            return;
         }
     }
-
-    return first_rc;
 }
 
 /* ── ipc_start_all_actors / ipc_run_all / ipc_stop_all ──────────────────── */
 
 int ipc_start_all_actors(void)
 {
-    ipc_port_table_lock();
-    registry_frozen = true;
-    ipc_port_table_unlock();
-
     struct ipc_actor *a = _ipc_actor_list;
     while (a) {
         int rc = ipc_port_actor_init(a);
@@ -361,6 +305,7 @@ int ipc_start_all_actors(void)
         }
         a = a->_next;
     }
+    actors_started = true;
     return 0;
 }
 

@@ -16,26 +16,6 @@
 #include <string.h>
 #include <time.h>
 
-/* ── Table mutex (one per process) ───────────────────────────────────────── */
-
-static pthread_mutex_t table_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_once_t table_once   = PTHREAD_ONCE_INIT;
-
-static void table_mutex_init_once(void)
-{
-    /* PTHREAD_MUTEX_INITIALIZER already initialised it; this exists
-     * only to match the "init once" pattern used by the Zephyr port. */
-}
-
-void ipc_port_table_lock(void)
-{
-    pthread_mutex_lock(&table_mutex);
-}
-void ipc_port_table_unlock(void)
-{
-    pthread_mutex_unlock(&table_mutex);
-}
-
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
 static struct ipc_port_state *port_of(struct ipc_actor *a)
@@ -74,9 +54,6 @@ static void *ipc_thread_fn(void *arg)
 
 int ipc_port_actor_init(struct ipc_actor *a)
 {
-    /* Lazy: pthread_once ensures table_mutex is set up before first lock. */
-    pthread_once(&table_once, table_mutex_init_once);
-
     struct ipc_port_state *p = port_of(a);
     size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
 
@@ -172,6 +149,11 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     }
     pthread_mutex_unlock(&p->lock);
     return rc;
+}
+
+int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
+{
+    return ipc_port_send(a, msg);
 }
 
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)

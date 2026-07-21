@@ -1,5 +1,5 @@
 /*
- * led_actor.c — LED actor: typed handlers, dispatch, registration.
+ * led_actor.c — LED actor: typed handlers and static routing.
  */
 #include "led_actor.h"
 #include <stdbool.h>
@@ -85,30 +85,17 @@ IPC_HANDLE(LedFault, led_fault_handler)
     g_blink_remaining = 0;
 }
 
-/* ── Dispatch ────────────────────────────────────────────────────────────── */
-
-static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, LedOn, led_on_handler)
-    IPC_DISPATCH_TO(msg, LedOff, led_off_handler)
-    IPC_DISPATCH_TO(msg, LedBlink, led_blink_handler)
-    IPC_DISPATCH_TO(msg, GetLedStateRequest, get_led_state_handler)
-    IPC_DISPATCH_TO(msg, LedFault, led_fault_handler)
-    IPC_DISPATCH_IGNORE_UNKNOWN();
-}
-
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-IPC_ACTOR_DEFINE(led_actor, "led", led_handler, 512, 5, 8);
+static const struct ipc_actor_handler_entry led_handlers[] = {
+    IPC_ON(LedOn, led_on_handler),       IPC_ON(LedOff, led_off_handler),
+    IPC_ON(LedBlink, led_blink_handler), IPC_ON(GetLedStateRequest, get_led_state_handler),
+    IPC_ON(LedFault, led_fault_handler),
+};
+
+IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8, IPC_ACTOR_HANDLERS(led_handlers));
 
 int led_actor_module_init(void)
 {
-    // registering handlers for actor.
-    ipc_register(&led_actor, &LedOn);
-    ipc_register(&led_actor, &LedOff);
-    ipc_register(&led_actor, &LedBlink);
-    ipc_register(&led_actor, &GetLedStateRequest);
-    ipc_subscribe(&led_actor, &LedFault);
-
     return 0;
 }
