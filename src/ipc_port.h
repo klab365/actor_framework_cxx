@@ -11,10 +11,6 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ── Per-actor port state (already opaque in ipc.h) ──────────────────────── */
-
-/* ipc_port_state_t defined in ipc.h */
-
 /* ── Table lock (registry / registration / subscription tables) ─────────── */
 
 void ipc_port_table_lock(void);

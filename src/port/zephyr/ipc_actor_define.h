@@ -9,6 +9,8 @@
  */
 #pragma once
 
+#include "ipc_port_state.h"
+
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 
@@ -33,6 +35,7 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
     _Static_assert((qdepth) > 0, #actor_sym ": queue_depth must be positive");                     \
     K_THREAD_STACK_DEFINE(actor_sym##_stack, (stack_sz));                                          \
     static char actor_sym##_msgq_buf[(qdepth) * sizeof(struct ipc_msg)];                           \
+    static struct ipc_port_state actor_sym##_port_state;                                           \
     static struct ipc_actor actor_sym = {                                                          \
         .name    = (actor_name),                                                                   \
         .handler = (handler_fn),                                                                   \
@@ -42,6 +45,7 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
                 .priority    = (prio),                                                             \
                 .queue_depth = sizeof(actor_sym##_msgq_buf) / sizeof(struct ipc_msg),              \
             },                                                                                     \
+        .port  = &(actor_sym##_port_state),                                                        \
         ._next = NULL,                                                                             \
     };                                                                                             \
     static int actor_sym##_register_static_actor(void)                                             \

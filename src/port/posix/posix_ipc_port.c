@@ -7,6 +7,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "ipc.h"
 #include "ipc_port.h"
+#include "ipc_port_state.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -37,37 +38,9 @@ void ipc_port_table_unlock(void)
 
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
-struct ipc_port_state {
-    pthread_t thread;
-    pthread_mutex_t lock;
-    pthread_cond_t cond;
-
-    /* Ring buffer (calloc'd once in ipc_port_start) */
-    struct ipc_msg *ring;
-    size_t capacity;
-    size_t head;
-    size_t tail;
-    size_t count;
-
-    bool running;
-    bool joined;
-
-    /* Delayed send: single pending delayed message per actor */
-    pthread_t delay_thread;
-    bool delay_active;
-    pthread_mutex_t delay_lock;
-    pthread_cond_t delay_cond;
-    struct ipc_msg delay_msg;
-    uint32_t delay_ms;
-    bool delay_cancel;
-};
-
-_Static_assert(sizeof(struct ipc_port_state) <= sizeof(ipc_port_state_t),
-               "Increase ipc_port_state_t opaque storage for POSIX port state");
-
 static struct ipc_port_state *port_of(struct ipc_actor *a)
 {
-    return (struct ipc_port_state *) (void *) &a->port;
+    return (struct ipc_port_state *) a->port;
 }
 
 /* ── Actor thread ────────────────────────────────────────────────────────── */

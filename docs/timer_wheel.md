@@ -134,10 +134,9 @@ synchronous `ipc_port_send` path instead.
 
 ## Per-actor state layout
 
-`struct ipc_port_state` is the platform-specific blob embedded in
-`struct ipc_actor` as `ipc_port_state_t` (an opaque
-`uintptr_t[IPC_PORT_STATE_WORDS]`). Its concrete contents are
-private to each port, but the items relevant to delayed sends are:
+`struct ipc_port_state` is the platform-specific state referenced by
+`struct ipc_actor::port`. Its concrete contents are private to each port,
+but the items relevant to delayed sends are:
 
 | Field                | POSIX port                          | Zephyr port                  |
 |----------------------|-------------------------------------|------------------------------|
@@ -147,11 +146,9 @@ private to each port, but the items relevant to delayed sends are:
 | Delay bookkeeping    | `uint32_t delay_ms; bool delay_active; bool delay_cancel;` | (none)            |
 | "Last scheduled"     | (none — last is whatever the thread holds) | (none — `k_work` reschedule is atomic) |
 
-The size of this struct must fit in `IPC_PORT_STATE_WORDS ×
-sizeof(uintptr_t)`. Both ports have a `_Static_assert` enforcing
-this. Default `IPC_PORT_STATE_WORDS = 64` (512 B on 64-bit, 256 B on
-32-bit) is sized for the Zephyr port, which is the larger of the
-two.
+Each port's `IPC_ACTOR_DEFINE()` implementation emits exact per-actor
+storage for this struct, so delayed-message storage scales naturally with
+`IPC_PAYLOAD_SIZE` without a public opaque-storage sizing knob.
 
 ## Lifecycle
 

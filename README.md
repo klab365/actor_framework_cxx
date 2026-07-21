@@ -29,7 +29,7 @@ ipc/
 │       └── zephyr/
 │           ├── zephyr_ipc_port.c
 │           ├── ipc_defaults.h   ← Zephyr defaults wrapper
-│           ├── ipc_config.h     ← CONFIG_ACTOR_PAYLOAD_SIZE → IPC_PAYLOAD_SIZE
+│           ├── ipc_config.h     ← Zephyr Kconfig → IPC_* sizing macros
 │           └── Kconfig
 ├── tests/
 │   ├── unit/              ← gtest; links ipc.c + mock_ipc_port (no threads)
@@ -226,9 +226,9 @@ The only public compile-time sizing knob is defined in
 |--------------------|---------|----------------------------|
 | `IPC_PAYLOAD_SIZE` | 32      | wire message payload bytes |
 
-Actor stack and queue storage are declared per actor with
-`IPC_ACTOR_DEFINE()`. Registry capacities and port opaque storage are
-fixed implementation details, not user configuration.
+Actor stack, queue storage, and port runtime state are declared per actor
+with `IPC_ACTOR_DEFINE()`. Registry capacities are fixed implementation
+details, not user configuration.
 
 Override precedence (highest wins):
 
@@ -237,6 +237,10 @@ Override precedence (highest wins):
 3. On Zephyr, set `CONFIG_ACTOR_PAYLOAD_SIZE` in Kconfig. The port's
    overlay at `src/port/zephyr/ipc_config.h` translates it into
    `IPC_PAYLOAD_SIZE` before the public default is consulted.
+
+Per-actor port runtime state is emitted by the active port's
+`IPC_ACTOR_DEFINE()` implementation, so there is no separate public sizing
+knob for port-state storage.
 
 Every `IPC_*_DEFINE` macro `static_assert`s that its payload fits
 `IPC_PAYLOAD_SIZE` at compile time, so an oversized payload fails the
@@ -281,7 +285,7 @@ Inside a Zephyr app, drop this repo in as the `ipc` module (or use
 CONFIG_ACTOR=y
 ```
 
-Tune only inline message payload size via `CONFIG_ACTOR_PAYLOAD_SIZE`
+Tune inline message payload size via `CONFIG_ACTOR_PAYLOAD_SIZE`
 (see `src/port/zephyr/Kconfig`). Actor stack and queue storage are
 specified per actor with `IPC_ACTOR_DEFINE()`.
 
@@ -340,10 +344,10 @@ under `src/` is implementation detail and not exported to consumers.
   [`docs/timer_wheel.md`](docs/timer_wheel.md) for the full layout
   and the contract that surrounds it. Explicit cancellation is not
   supported.
-- **Port seam** — `struct ipc_port_state` (in `ipc_port_state_t`) is
-  the only platform-specific type visible in the public API. New ports
-  must implement the full `src/ipc_port.h` interface and fit within the
-  fixed opaque storage in `ipc_port_state_t`.
+- **Port seam** — `struct ipc_actor::port` is an opaque pointer to
+  platform-specific state emitted by the active port's `IPC_ACTOR_DEFINE()`
+  implementation. New ports must implement the full `src/ipc_port.h`
+  interface and provide their own per-actor state storage.
 - **Interrupt-context publish** — use `IPC_ISR_PUBLISH(EventType, payload)`
   from interrupt context on ports whose `ipc_port_send()` is interrupt-safe.
   It is valid only after `ipc_start_all_actors()` freezes registration and
