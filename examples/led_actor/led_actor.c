@@ -16,6 +16,24 @@ static bool g_disabled = false; /* set on LedFault; ignore further cmds */
 
 IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
 
+IPC_START_HOOK(led_actor, led_on_start)
+{
+    (void) self;
+    printf("[led] start hook\n");
+}
+
+IPC_STOP_HOOK(led_actor, led_on_stop)
+{
+    (void) self;
+    printf("[led] stop hook\n");
+}
+
+IPC_UNKNOWN(led_actor, led_on_unknown)
+{
+    (void) self;
+    printf("[led] unknown message id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
 IPC_ACTOR_HANDLE(led_actor, LedOn, led_on_handler)

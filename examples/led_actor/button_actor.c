@@ -100,6 +100,24 @@ static void on_tick(struct ipc_actor *self)
 
 IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 16);
 
+IPC_START_HOOK(button_actor, button_on_start)
+{
+    (void) self;
+    printf("[btn] start hook\n");
+}
+
+IPC_STOP_HOOK(button_actor, button_on_stop)
+{
+    (void) self;
+    printf("[btn] stop hook\n");
+}
+
+IPC_UNKNOWN(button_actor, button_on_unknown)
+{
+    (void) self;
+    printf("[btn] unknown message id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
 IPC_ACTOR_HANDLE(button_actor, ButtonTick, on_tick_msg)

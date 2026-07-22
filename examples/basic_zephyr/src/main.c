@@ -21,6 +21,42 @@ static atomic_uint basic_pong_count;
 IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4);
 IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4);
 
+IPC_START_HOOK(ping_actor, ping_on_start)
+{
+    ARG_UNUSED(self);
+    printk("ipc basic: ping start hook\n");
+}
+
+IPC_STOP_HOOK(ping_actor, ping_on_stop)
+{
+    ARG_UNUSED(self);
+    printk("ipc basic: ping stop hook\n");
+}
+
+IPC_UNKNOWN(ping_actor, ping_on_unknown)
+{
+    ARG_UNUSED(self);
+    printk("ipc basic: ping unknown id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
+IPC_START_HOOK(pong_actor, pong_on_start)
+{
+    ARG_UNUSED(self);
+    printk("ipc basic: pong start hook\n");
+}
+
+IPC_STOP_HOOK(pong_actor, pong_on_stop)
+{
+    ARG_UNUSED(self);
+    printk("ipc basic: pong stop hook\n");
+}
+
+IPC_UNKNOWN(pong_actor, pong_on_unknown)
+{
+    ARG_UNUSED(self);
+    printk("ipc basic: pong unknown id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
 IPC_ACTOR_HANDLE(pong_actor, BasicPing, on_basic_ping)
 {
     ARG_UNUSED(self);

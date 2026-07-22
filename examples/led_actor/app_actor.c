@@ -9,6 +9,24 @@
 
 IPC_ACTOR_DEFINE(app_actor, "app", 1024, 4, 32);
 
+IPC_START_HOOK(app_actor, app_on_start)
+{
+    (void) self;
+    printf("[app] start hook\n");
+}
+
+IPC_STOP_HOOK(app_actor, app_on_stop)
+{
+    (void) self;
+    printf("[app] stop hook\n");
+}
+
+IPC_UNKNOWN(app_actor, app_on_unknown)
+{
+    (void) self;
+    printf("[app] unknown message id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
 IPC_ACTOR_HANDLE(app_actor, LedFault, led_fault_handler)

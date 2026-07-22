@@ -22,6 +22,11 @@ extern "C" {
 void _ipc_actor_register_static(struct ipc_actor *actor);
 void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t *desc,
                                         ipc_actor_msg_handler_t handler);
+void _ipc_actor_register_start_hook_static(struct ipc_actor *actor,
+                                           ipc_actor_lifecycle_hook_t hook);
+void _ipc_actor_register_stop_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook);
+void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
+                                             ipc_actor_unknown_handler_t hook);
 void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg);
 int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stack,
                                              size_t stack_size, char *msgq_buf, size_t queue_depth);
@@ -79,3 +84,36 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
              CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);                                     \
     static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,     \
                            const struct ipc_msg *raw_msg)
+
+#define IPC_START_HOOK(actor_sym, hook_fn)                            \
+    static void hook_fn(struct ipc_actor *self);                      \
+    static int actor_sym##_##hook_fn##_register_hook(void)            \
+    {                                                                 \
+        _ipc_actor_register_start_hook_static(&(actor_sym), hook_fn); \
+        return 0;                                                     \
+    }                                                                 \
+    SYS_INIT(actor_sym##_##hook_fn##_register_hook, PRE_KERNEL_2,     \
+             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);                    \
+    static void hook_fn(struct ipc_actor *self)
+
+#define IPC_STOP_HOOK(actor_sym, hook_fn)                            \
+    static void hook_fn(struct ipc_actor *self);                     \
+    static int actor_sym##_##hook_fn##_register_hook(void)           \
+    {                                                                \
+        _ipc_actor_register_stop_hook_static(&(actor_sym), hook_fn); \
+        return 0;                                                    \
+    }                                                                \
+    SYS_INIT(actor_sym##_##hook_fn##_register_hook, PRE_KERNEL_2,    \
+             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);                   \
+    static void hook_fn(struct ipc_actor *self)
+
+#define IPC_UNKNOWN(actor_sym, hook_fn)                                     \
+    static void hook_fn(struct ipc_actor *self, const struct ipc_msg *msg); \
+    static int actor_sym##_##hook_fn##_register_hook(void)                  \
+    {                                                                       \
+        _ipc_actor_register_unknown_hook_static(&(actor_sym), hook_fn);     \
+        return 0;                                                           \
+    }                                                                       \
+    SYS_INIT(actor_sym##_##hook_fn##_register_hook, PRE_KERNEL_2,           \
+             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);                          \
+    static void hook_fn(struct ipc_actor *self, const struct ipc_msg *msg)
