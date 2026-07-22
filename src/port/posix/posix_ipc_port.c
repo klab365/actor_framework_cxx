@@ -62,12 +62,14 @@ int ipc_port_actor_init(struct ipc_actor *a)
         return -ENOMEM;
     }
 
-    p->capacity = cap;
-    p->head = p->tail = p->count = 0;
-    p->running                   = true;
-    p->joined                    = false;
-    p->delay_active              = false;
-    p->delay_cancel              = false;
+    p->capacity     = cap;
+    p->head         = 0;
+    p->tail         = 0;
+    p->count        = 0;
+    p->running      = true;
+    p->joined       = false;
+    p->delay_active = false;
+    p->delay_cancel = false;
 
     pthread_mutex_init(&p->lock, NULL);
     pthread_cond_init(&p->cond, NULL);
@@ -267,8 +269,10 @@ int ipc_port_restart_actor(struct ipc_actor *a)
     cancel_delayed_send(p);
 
     pthread_mutex_lock(&p->lock);
-    p->head = p->tail = p->count = 0;
-    p->running                   = true;
+    p->head    = 0;
+    p->tail    = 0;
+    p->count   = 0;
+    p->running = true;
     pthread_mutex_unlock(&p->lock);
 
     return 0;
