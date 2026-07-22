@@ -66,6 +66,9 @@ void mock_port_set_next_send_rc(int rc);
  */
 void mock_port_set_next_send_after_rc(int rc);
 
+/* Same, but for ipc_port_restart_actor. */
+void mock_port_set_next_restart_rc(int rc);
+
 /* If non-null, ipc_port_start fails the next time the named actor is
  * started. Cleared by mock_port_reset(). The first matching call fails
  * and returns -EINVAL; subsequent calls succeed (so lifecycle tests can
