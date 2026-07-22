@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <ipc.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -8,6 +9,7 @@
 IPC_CMD_DEFINE(BasicPing, { uint32_t count; });
 IPC_CMD_DEFINE(BasicPong, { uint32_t count; });
 IPC_CMD_DEFINE(BasicStatusRequest, { uint32_t request_id; });
+IPC_CMD_DEFINE(BasicFault, { uint32_t code; });
 IPC_CMD_DEFINE(BasicStatusResponse, {
     uint32_t request_id;
     uint32_t ping_count;
@@ -16,10 +18,13 @@ IPC_CMD_DEFINE(BasicStatusResponse, {
 
 static atomic_uint basic_ping_count;
 static atomic_uint basic_pong_count;
+static bool pong_restart_pending;
+static unsigned int pong_restart_count;
 
 /* Each actor declares exact-size static stack/msgq storage via ipc.h. */
 IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4);
 IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4);
+IPC_SUPERVISE(pong_actor, IPC_SUPERVISE_RESTART);
 
 IPC_START_HOOK(ping_actor, ping_on_start)
 {
@@ -42,19 +47,36 @@ IPC_UNKNOWN(ping_actor, ping_on_unknown)
 IPC_START_HOOK(pong_actor, pong_on_start)
 {
     ARG_UNUSED(self);
-    printk("ipc basic: pong start hook\n");
+    if (pong_restart_pending) {
+        pong_restart_pending = false;
+        printk("ipc basic: pong RESTART complete (#%u)\n", pong_restart_count);
+    } else {
+        printk("ipc basic: pong initial start hook\n");
+    }
 }
 
 IPC_STOP_HOOK(pong_actor, pong_on_stop)
 {
     ARG_UNUSED(self);
-    printk("ipc basic: pong stop hook\n");
+    if (pong_restart_pending) {
+        printk("ipc basic: pong stop hook before restart #%u\n", pong_restart_count);
+    } else {
+        printk("ipc basic: pong stop hook\n");
+    }
 }
 
 IPC_UNKNOWN(pong_actor, pong_on_unknown)
 {
     ARG_UNUSED(self);
     printk("ipc basic: pong unknown id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
+IPC_FAIL_HOOK(pong_actor, pong_on_failure)
+{
+    ARG_UNUSED(self);
+    pong_restart_count++;
+    pong_restart_pending = true;
+    printk("ipc basic: pong failure reason=%d -> restart #%u\n", reason, pong_restart_count);
 }
 
 IPC_ACTOR_HANDLE(pong_actor, BasicPing, on_basic_ping)
@@ -103,6 +125,17 @@ IPC_ACTOR_HANDLE(pong_actor, BasicStatusRequest, on_basic_status_request)
     ipc_send(BasicStatusResponse, response);
 }
 
+IPC_ACTOR_HANDLE(pong_actor, BasicFault, on_basic_fault)
+{
+    (void) raw_msg;
+
+    printk("ipc basic: pong received fault code=0x%x; reporting actor failure\n", msg->code);
+    int rc = ipc_actor_fail(self, -EIO);
+    if (rc != 0) {
+        printk("ipc basic: pong supervision failed: %d\n", rc);
+    }
+}
+
 IPC_ACTOR_HANDLE(ping_actor, BasicStatusResponse, on_basic_status_response)
 {
     (void) self;
@@ -146,6 +179,13 @@ int main(void)
     int rc                               = ipc_send(BasicStatusRequest, request);
     if (rc != 0) {
         printk("ipc basic: status request failed: %d\n", rc);
+    }
+    k_sleep(K_MSEC(100));
+
+    BasicFault_payload_t fault = {.code = 0xBADCAFEu};
+    rc                         = ipc_send(BasicFault, fault);
+    if (rc != 0) {
+        printk("ipc basic: fault send failed: %d\n", rc);
     }
     k_sleep(K_MSEC(100));
 

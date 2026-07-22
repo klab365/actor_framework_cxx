@@ -177,6 +177,14 @@ void ipc_port_stop_actor(struct ipc_actor *a)
     s->stop_count++;
 }
 
+int ipc_port_restart_actor(struct ipc_actor *a)
+{
+    mock_actor_state_t *s = mock_port_actor_state(a);
+    s->restart_count++;
+    s->has_pending_send_after = false;
+    return 0;
+}
+
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 {
     mock_actor_state_t *s = mock_port_actor_state(a);

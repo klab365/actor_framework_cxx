@@ -227,13 +227,8 @@ int ipc_port_run_all(void)
     return 0;
 }
 
-void ipc_port_stop_actor(struct ipc_actor *a)
+static void cancel_delayed_send(struct ipc_port_state *p)
 {
-    struct ipc_port_state *p = port_of(a);
-
-    /* Cancel delay thread if active. The delayed-send helper owns a
-     * separate pthread; join it here so no helper can enqueue more work
-     * after the actor has been asked to stop. */
     pthread_mutex_lock(&p->delay_lock);
     if (p->delay_active) {
         p->delay_cancel = true;
@@ -245,9 +240,36 @@ void ipc_port_stop_actor(struct ipc_actor *a)
         p->delay_active = false;
     }
     pthread_mutex_unlock(&p->delay_lock);
+}
+
+void ipc_port_stop_actor(struct ipc_actor *a)
+{
+    struct ipc_port_state *p = port_of(a);
+
+    /* Cancel delay thread if active. The delayed-send helper owns a
+     * separate pthread; join it here so no helper can enqueue more work
+     * after the actor has been asked to stop. */
+    cancel_delayed_send(p);
 
     pthread_mutex_lock(&p->lock);
     p->running = false;
     pthread_cond_broadcast(&p->cond);
     pthread_mutex_unlock(&p->lock);
+}
+
+int ipc_port_restart_actor(struct ipc_actor *a)
+{
+    struct ipc_port_state *p = port_of(a);
+
+    /* Soft restart for message-driven actors: cancel delayed work and
+     * drop queued messages. The actor thread keeps running, so this is
+     * safe even when an actor reports failure from inside its own handler. */
+    cancel_delayed_send(p);
+
+    pthread_mutex_lock(&p->lock);
+    p->head = p->tail = p->count = 0;
+    p->running                   = true;
+    pthread_mutex_unlock(&p->lock);
+
+    return 0;
 }

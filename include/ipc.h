@@ -110,6 +110,21 @@ typedef void (*ipc_actor_lifecycle_hook_t)(struct ipc_actor *self);
 /** @brief Actor hook called when no typed handler matches a received message. */
 typedef void (*ipc_actor_unknown_handler_t)(struct ipc_actor *self, const struct ipc_msg *msg);
 
+/** @brief Actor supervision action applied when ipc_actor_fail() is called. */
+typedef enum {
+    /** No automatic action. The failure hook, if any, is still called. */
+    IPC_SUPERVISE_NONE = 0,
+
+    /** Request the actor to stop. */
+    IPC_SUPERVISE_STOP,
+
+    /** Reset actor port state and run stop/start hooks. */
+    IPC_SUPERVISE_RESTART,
+} ipc_supervision_strategy_t;
+
+/** @brief Actor hook called when ipc_actor_fail() is called. */
+typedef void (*ipc_actor_failure_hook_t)(struct ipc_actor *self, int reason);
+
 /**
  * @brief Message-specific handler trampoline type.
  *
@@ -151,6 +166,12 @@ struct ipc_actor {
     /** Optional hook called by the default dispatcher for unhandled messages. */
     ipc_actor_unknown_handler_t unknown_handler;
 
+    /** Supervision strategy used by ipc_actor_fail(). Defaults to IPC_SUPERVISE_NONE. */
+    ipc_supervision_strategy_t supervision;
+
+    /** Optional hook called before the supervision strategy is applied. */
+    ipc_actor_failure_hook_t failure_hook;
+
     /** Stack, priority, and queue-depth configuration. */
     struct ipc_actor_cfg cfg;
 
@@ -186,6 +207,12 @@ struct ipc_actor {
  *
  * @def IPC_UNKNOWN(actor_sym, hook_fn)
  * @brief Define a hook called when @p actor_sym receives an unhandled message.
+ *
+ * @def IPC_SUPERVISE(actor_sym, strategy)
+ * @brief Set @p actor_sym's failure strategy used by ipc_actor_fail().
+ *
+ * @def IPC_FAIL_HOOK(actor_sym, hook_fn)
+ * @brief Define a hook called when @p actor_sym reports failure.
  */
 #include <ipc_actor_define.h>
 
@@ -381,6 +408,18 @@ int ipc_run_all(void);
  * non-POSIX targets.
  */
 void ipc_stop_all(void);
+
+/**
+ * @brief Report that an actor failed and apply its supervision strategy.
+ *
+ * Calls the actor's failure hook, if registered. Then applies the actor's
+ * IPC_SUPERVISE() strategy: none, stop, or restart.
+ *
+ * @param self Failed actor.
+ * @param reason Negative errno-style failure reason, or any application code.
+ * @return 0 on success, -EINVAL for NULL @p self, or a negative port error.
+ */
+int ipc_actor_fail(struct ipc_actor *self, int reason);
 
 #ifdef __cplusplus
 }

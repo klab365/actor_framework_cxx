@@ -26,6 +26,7 @@ typedef struct {
     struct ipc_actor *actor;
     int start_count;
     int stop_count;
+    int restart_count;
     int send_count;
     int send_after_count;
     uint32_t last_send_after_delay_ms;

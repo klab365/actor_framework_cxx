@@ -217,3 +217,15 @@ void ipc_port_stop_actor(struct ipc_actor *a)
     k_work_cancel_delayable(&p->delayed_work);
     k_thread_abort(&p->thread);
 }
+
+int ipc_port_restart_actor(struct ipc_actor *a)
+{
+    struct ipc_port_state *p = port_of(a);
+
+    /* Soft restart for message-driven actors: cancel delayed work and
+     * drop queued messages. The actor thread keeps running, so this is
+     * safe even when an actor reports failure from inside its own handler. */
+    k_work_cancel_delayable(&p->delayed_work);
+    k_msgq_purge(&p->msgq);
+    return 0;
+}
