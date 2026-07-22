@@ -169,7 +169,7 @@ void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t 
     _ipc_actor_register_static(actor);
     _ipc_ensure_id(desc);
 
-    if (handler_count >= (int) (IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS)) {
+    if (handler_count >= (IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS)) {
         assert(0 && "IPC handler table full");
         return;
     }
