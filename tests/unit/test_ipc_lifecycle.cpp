@@ -8,6 +8,13 @@ extern "C" {
 #include "ipc_internal.h"
 #include "ipc_port.h"
 #include "mock_ipc_port.h"
+void test_ipc_hooks_reset_counters(void);
+void test_ipc_hooks_register_actor(void);
+int test_ipc_hooks_start_count(void);
+int test_ipc_hooks_stop_count(void);
+int test_ipc_hooks_unknown_count(void);
+uint32_t test_ipc_hooks_unknown_id(void);
+void test_ipc_hooks_dispatch_unknown(uint32_t msg_id);
 }
 
 namespace
@@ -132,6 +139,30 @@ TEST_F(LifecycleTest, StartAllPropagatesFirstPortError)
 TEST_F(LifecycleTest, StopAllOnEmptyActorListIsNoop)
 {
     ipc_stop_all(); /* must not crash */
+}
+
+TEST_F(LifecycleTest, ActorStartAndStopHookMacrosAreCalled)
+{
+    test_ipc_hooks_reset_counters();
+    test_ipc_hooks_register_actor();
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(test_ipc_hooks_start_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_stop_count(), 0);
+
+    ipc_stop_all();
+    EXPECT_EQ(test_ipc_hooks_stop_count(), 1);
+}
+
+TEST_F(LifecycleTest, ActorUnknownHookMacroIsCalledForUnhandledMessage)
+{
+    test_ipc_hooks_reset_counters();
+
+    constexpr uint32_t unknown_id = 0x12345678u;
+    test_ipc_hooks_dispatch_unknown(unknown_id);
+
+    EXPECT_EQ(test_ipc_hooks_unknown_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_unknown_id(), unknown_id);
 }
 
 } // namespace

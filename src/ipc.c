@@ -184,6 +184,25 @@ void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t 
     (void) rc;
 }
 
+void _ipc_actor_register_start_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook)
+{
+    _ipc_actor_register_static(actor);
+    actor->start_hook = hook;
+}
+
+void _ipc_actor_register_stop_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook)
+{
+    _ipc_actor_register_static(actor);
+    actor->stop_hook = hook;
+}
+
+void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
+                                             ipc_actor_unknown_handler_t hook)
+{
+    _ipc_actor_register_static(actor);
+    actor->unknown_handler = hook;
+}
+
 /* ── ipc_send_raw ────────────────────────────────────────────────────────── */
 
 int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
@@ -304,6 +323,10 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
             return;
         }
     }
+
+    if (self && self->unknown_handler) {
+        self->unknown_handler(self, msg);
+    }
 }
 
 /* ── ipc_start_all_actors / ipc_run_all / ipc_stop_all ──────────────────── */
@@ -315,6 +338,9 @@ int ipc_start_all_actors(void)
         int rc = ipc_port_actor_init(a);
         if (rc) {
             return rc;
+        }
+        if (a->start_hook) {
+            a->start_hook(a);
         }
         rc = ipc_port_start(a);
         if (rc) {
@@ -339,6 +365,9 @@ void ipc_stop_all(void)
 {
     struct ipc_actor *a = _ipc_actor_list;
     while (a) {
+        if (a->stop_hook) {
+            a->stop_hook(a);
+        }
         ipc_port_stop_actor(a);
         a = a->_next;
     }

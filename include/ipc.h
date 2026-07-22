@@ -104,6 +104,12 @@ struct ipc_actor_cfg {
  */
 typedef void (*ipc_actor_handler_t)(struct ipc_actor *self, const struct ipc_msg *msg);
 
+/** @brief Actor lifecycle hook called during framework-managed startup/stop. */
+typedef void (*ipc_actor_lifecycle_hook_t)(struct ipc_actor *self);
+
+/** @brief Actor hook called when no typed handler matches a received message. */
+typedef void (*ipc_actor_unknown_handler_t)(struct ipc_actor *self, const struct ipc_msg *msg);
+
 /**
  * @brief Message-specific handler trampoline type.
  *
@@ -136,6 +142,15 @@ struct ipc_actor {
     /** Raw actor message entry point called by the port. */
     ipc_actor_handler_t handler;
 
+    /** Optional hook called after port resources are initialized and before thread start. */
+    ipc_actor_lifecycle_hook_t start_hook;
+
+    /** Optional hook called before a framework stop request is passed to the port. */
+    ipc_actor_lifecycle_hook_t stop_hook;
+
+    /** Optional hook called by the default dispatcher for unhandled messages. */
+    ipc_actor_unknown_handler_t unknown_handler;
+
     /** Stack, priority, and queue-depth configuration. */
     struct ipc_actor_cfg cfg;
 
@@ -162,6 +177,15 @@ struct ipc_actor {
  * Defines @p handler_fn with a typed `<MsgType>_payload_t` payload pointer and
  * registers it for @p actor_sym. Commands are routed to one actor; events are
  * delivered to each actor that registers a handler for the event type.
+ *
+ * @def IPC_START_HOOK(actor_sym, hook_fn)
+ * @brief Define a hook called during ipc_start_all_actors() for @p actor_sym.
+ *
+ * @def IPC_STOP_HOOK(actor_sym, hook_fn)
+ * @brief Define a hook called during ipc_stop_all() for @p actor_sym.
+ *
+ * @def IPC_UNKNOWN(actor_sym, hook_fn)
+ * @brief Define a hook called when @p actor_sym receives an unhandled message.
  */
 #include <ipc_actor_define.h>
 

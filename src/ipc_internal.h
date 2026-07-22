@@ -57,3 +57,8 @@ void _ipc_reset_for_testing(void);
 void _ipc_actor_register_static(struct ipc_actor *actor);
 void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t *desc,
                                         ipc_actor_msg_handler_t handler);
+void _ipc_actor_register_start_hook_static(struct ipc_actor *actor,
+                                           ipc_actor_lifecycle_hook_t hook);
+void _ipc_actor_register_stop_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook);
+void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
+                                             ipc_actor_unknown_handler_t hook);
