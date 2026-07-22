@@ -16,6 +16,7 @@
 int ipc_port_actor_init(struct ipc_actor *a);
 int ipc_port_start(struct ipc_actor *a);
 void ipc_port_stop_actor(struct ipc_actor *a);
+int ipc_port_restart_actor(struct ipc_actor *a);
 
 /* ── Per-actor transport (unchanged) ─────────────────────────────────────── */
 

@@ -26,6 +26,7 @@ typedef struct {
     struct ipc_actor *actor;
     int start_count;
     int stop_count;
+    int restart_count;
     int send_count;
     int send_after_count;
     uint32_t last_send_after_delay_ms;
@@ -64,6 +65,9 @@ void mock_port_set_next_send_rc(int rc);
  * "scheduling failed" branch of the send-after contract.
  */
 void mock_port_set_next_send_after_rc(int rc);
+
+/* Same, but for ipc_port_restart_actor. */
+void mock_port_set_next_restart_rc(int rc);
 
 /* If non-null, ipc_port_start fails the next time the named actor is
  * started. Cleared by mock_port_reset(). The first matching call fails

@@ -38,6 +38,7 @@ typedef struct {
      * uniform-failure knob above. */
     int next_send_rc;
     int next_send_after_rc;
+    int next_restart_rc;
 } mock_state_t;
 
 static mock_state_t g_mock;
@@ -60,6 +61,7 @@ void mock_port_reset(void)
     g_mock.next_start_should_fail = NULL;
     g_mock.next_send_rc           = 0;
     g_mock.next_send_after_rc     = 0;
+    g_mock.next_restart_rc        = 0;
     pthread_mutex_unlock(&g_mock.lock);
 }
 
@@ -95,6 +97,11 @@ void mock_port_set_next_send_rc(int rc)
 void mock_port_set_next_send_after_rc(int rc)
 {
     g_mock.next_send_after_rc = rc;
+}
+
+void mock_port_set_next_restart_rc(int rc)
+{
+    g_mock.next_restart_rc = rc;
 }
 
 void mock_port_set_next_start_should_fail(struct ipc_actor *a)
@@ -175,6 +182,19 @@ void ipc_port_stop_actor(struct ipc_actor *a)
 {
     mock_actor_state_t *s = mock_port_actor_state(a);
     s->stop_count++;
+}
+
+int ipc_port_restart_actor(struct ipc_actor *a)
+{
+    mock_actor_state_t *s = mock_port_actor_state(a);
+    s->restart_count++;
+    s->has_pending_send_after = false;
+    if (g_mock.next_restart_rc) {
+        int rc                 = g_mock.next_restart_rc;
+        g_mock.next_restart_rc = 0;
+        return rc;
+    }
+    return 0;
 }
 
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)

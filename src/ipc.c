@@ -20,6 +20,7 @@ int ipc_port_start(struct ipc_actor *a);
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
 void ipc_port_stop_actor(struct ipc_actor *a);
+int ipc_port_restart_actor(struct ipc_actor *a);
 
 /* ── Global actor registry (singly-linked list) ──────────────────────────── */
 
@@ -203,6 +204,19 @@ void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
     actor->unknown_handler = hook;
 }
 
+void _ipc_actor_register_supervision_static(struct ipc_actor *actor,
+                                            ipc_supervision_strategy_t strategy)
+{
+    _ipc_actor_register_static(actor);
+    actor->supervision = strategy;
+}
+
+void _ipc_actor_register_failure_hook_static(struct ipc_actor *actor, ipc_actor_failure_hook_t hook)
+{
+    _ipc_actor_register_static(actor);
+    actor->failure_hook = hook;
+}
+
 /* ── ipc_send_raw ────────────────────────────────────────────────────────── */
 
 int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
@@ -371,4 +385,42 @@ void ipc_stop_all(void)
         ipc_port_stop_actor(a);
         a = a->_next;
     }
+}
+
+int ipc_actor_fail(struct ipc_actor *self, int reason)
+{
+    if (!self) {
+        return -EINVAL;
+    }
+
+    if (self->failure_hook) {
+        self->failure_hook(self, reason);
+    }
+
+    switch (self->supervision) {
+    case IPC_SUPERVISE_NONE:
+        return 0;
+
+    case IPC_SUPERVISE_STOP:
+        if (self->stop_hook) {
+            self->stop_hook(self);
+        }
+        ipc_port_stop_actor(self);
+        return 0;
+
+    case IPC_SUPERVISE_RESTART:
+        if (self->stop_hook) {
+            self->stop_hook(self);
+        }
+        int rc = ipc_port_restart_actor(self);
+        if (rc) {
+            return rc;
+        }
+        if (self->start_hook) {
+            self->start_hook(self);
+        }
+        return 0;
+    }
+
+    return -EINVAL;
 }

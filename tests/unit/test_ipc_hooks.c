@@ -8,7 +8,11 @@ IPC_ACTOR_DEFINE(hook_actor, "hook", 1024, 0, 4);
 static int hook_start_count;
 static int hook_stop_count;
 static int hook_unknown_count;
+static int hook_failure_count;
+static int hook_failure_reason;
 static uint32_t hook_unknown_id;
+
+IPC_SUPERVISE(hook_actor, IPC_SUPERVISE_RESTART);
 
 IPC_START_HOOK(hook_actor, hook_on_start)
 {
@@ -29,12 +33,21 @@ IPC_UNKNOWN(hook_actor, hook_on_unknown)
     hook_unknown_id = msg->id;
 }
 
+IPC_FAIL_HOOK(hook_actor, hook_on_failure)
+{
+    (void) self;
+    hook_failure_count++;
+    hook_failure_reason = reason;
+}
+
 void test_ipc_hooks_reset_counters(void)
 {
-    hook_start_count   = 0;
-    hook_stop_count    = 0;
-    hook_unknown_count = 0;
-    hook_unknown_id    = 0;
+    hook_start_count    = 0;
+    hook_stop_count     = 0;
+    hook_unknown_count  = 0;
+    hook_failure_count  = 0;
+    hook_failure_reason = 0;
+    hook_unknown_id     = 0;
 }
 
 void test_ipc_hooks_register_actor(void)
@@ -65,6 +78,16 @@ int test_ipc_hooks_unknown_count(void)
 uint32_t test_ipc_hooks_unknown_id(void)
 {
     return hook_unknown_id;
+}
+
+int test_ipc_hooks_failure_count(void)
+{
+    return hook_failure_count;
+}
+
+int test_ipc_hooks_failure_reason(void)
+{
+    return hook_failure_reason;
 }
 
 void test_ipc_hooks_dispatch_unknown(uint32_t msg_id)

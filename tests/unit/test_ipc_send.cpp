@@ -297,6 +297,15 @@ TEST_F(SendTest, IsrPublishRejectsUninitializedDescriptorId)
     EXPECT_EQ(UntouchedEvt.id, 0u);
 }
 
+TEST_F(SendTest, IsrPublishRejectsNullAndCommandDescriptors)
+{
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    EvtA_payload_t payload = {.v = 1};
+    EXPECT_EQ(ipc_publish_isr_raw(nullptr, &payload), -EINVAL);
+    EXPECT_EQ(ipc_publish_isr_raw(&MsgA, &payload), -EINVAL);
+}
+
 TEST_F(SendTest, SendPropagatesPortError)
 {
     MsgA_payload_t payload = {.x = 1};

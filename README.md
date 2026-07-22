@@ -94,7 +94,39 @@ IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on)
 function plus static routing metadata. CMD handlers become single-target
 routes; EVENT handlers become fan-out subscriptions automatically.
 
-### 5. Send messages (no `extern` needed)
+### 5. Optional actor hooks and supervision
+
+Actors may define lifecycle, unknown-message, and failure hooks:
+
+```c
+IPC_START_HOOK(led_actor, led_on_start) { reset_led_state(); }
+IPC_STOP_HOOK(led_actor, led_on_stop) { cleanup_led_state(); }
+IPC_UNKNOWN(led_actor, led_on_unknown) { log_unknown(msg->id); }
+```
+
+Supervision is actor-local and defaults to `IPC_SUPERVISE_NONE`:
+
+```c
+IPC_SUPERVISE(led_actor, IPC_SUPERVISE_RESTART);
+
+IPC_FAIL_HOOK(led_actor, led_on_failure) {
+    printf("led failed: %d\n", reason);
+}
+
+IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on) {
+    if (driver_failed()) {
+        ipc_actor_fail(self, -EIO);
+        return;
+    }
+}
+```
+
+`IPC_SUPERVISE_STOP` requests the actor to stop. `IPC_SUPERVISE_RESTART`
+performs a soft restart for message-driven actors: pending delayed work and
+queued messages are dropped, then stop/start hooks are run so actor state can
+be reset.
+
+### 6. Send messages (no `extern` needed)
 
 ```c
 /* CMD — fire and forget */
@@ -119,7 +151,7 @@ IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
 ipc_send_after(LedBlink, 500, (LedBlink_payload_t){.period_ms = 500, .brightness = 200});
 ```
 
-### 6. Run the framework
+### 7. Run the framework
 
 POSIX (host / Linux / macOS):
 

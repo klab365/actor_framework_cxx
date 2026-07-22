@@ -2,6 +2,7 @@
  * led_actor.c — LED actor: typed handlers and static routing.
  */
 #include "led_actor.h"
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -10,28 +11,52 @@
 static int g_blink_remaining = 0;
 static uint32_t g_blink_period;
 static uint8_t g_blink_brightness;
-static bool g_disabled = false; /* set on LedFault; ignore further cmds */
+static bool g_disabled          = false;
+static bool g_restart_pending   = false;
+static unsigned g_restart_count = 0;
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
 IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
+IPC_SUPERVISE(led_actor, IPC_SUPERVISE_RESTART);
 
 IPC_START_HOOK(led_actor, led_on_start)
 {
     (void) self;
-    printf("[led] start hook\n");
+    g_disabled        = false;
+    g_blink_remaining = 0;
+    if (g_restart_pending) {
+        g_restart_pending = false;
+        printf("[led] RESTART complete (#%u): state reset and actor is accepting messages again\n",
+               g_restart_count);
+    } else {
+        printf("[led] initial start: state reset\n");
+    }
 }
 
 IPC_STOP_HOOK(led_actor, led_on_stop)
 {
     (void) self;
-    printf("[led] stop hook\n");
+    if (g_restart_pending) {
+        printf("[led] stop hook: preparing restart #%u\n", g_restart_count);
+    } else {
+        printf("[led] stop hook: shutdown requested\n");
+    }
 }
 
 IPC_UNKNOWN(led_actor, led_on_unknown)
 {
     (void) self;
     printf("[led] unknown message id=0x%x kind=%d\n", msg->id, (int) msg->kind);
+}
+
+IPC_FAIL_HOOK(led_actor, led_on_failure)
+{
+    (void) self;
+    g_restart_count++;
+    g_restart_pending = true;
+    printf("[led] failure hook reason=%d -> supervision policy will restart actor (#%u)\n", reason,
+           g_restart_count);
 }
 
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
@@ -99,10 +124,12 @@ IPC_ACTOR_HANDLE(led_actor, LedFault, led_fault_handler)
 {
     (void) self;
     (void) raw_msg;
-    printf("[led] FAULT received ch=%u code=0x%x — disabling self\n", msg->channel,
+    printf("[led] FAULT received ch=%u code=0x%x — reporting failure\n", msg->channel,
            msg->error_code);
-    g_disabled        = true;
-    g_blink_remaining = 0;
+    int rc = ipc_actor_fail(self, -EIO);
+    if (rc != 0) {
+        printf("[led] supervision failed: %d\n", rc);
+    }
 }
 
 int led_actor_module_init(void)

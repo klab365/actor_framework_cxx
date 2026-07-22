@@ -62,3 +62,7 @@ void _ipc_actor_register_start_hook_static(struct ipc_actor *actor,
 void _ipc_actor_register_stop_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook);
 void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
                                              ipc_actor_unknown_handler_t hook);
+void _ipc_actor_register_supervision_static(struct ipc_actor *actor,
+                                            ipc_supervision_strategy_t strategy);
+void _ipc_actor_register_failure_hook_static(struct ipc_actor *actor,
+                                             ipc_actor_failure_hook_t hook);

@@ -10,10 +10,13 @@ extern "C" {
 #include "mock_ipc_port.h"
 void test_ipc_hooks_reset_counters(void);
 void test_ipc_hooks_register_actor(void);
+struct ipc_actor *test_ipc_hooks_actor(void);
 int test_ipc_hooks_start_count(void);
 int test_ipc_hooks_stop_count(void);
 int test_ipc_hooks_unknown_count(void);
 uint32_t test_ipc_hooks_unknown_id(void);
+int test_ipc_hooks_failure_count(void);
+int test_ipc_hooks_failure_reason(void);
 void test_ipc_hooks_dispatch_unknown(uint32_t msg_id);
 }
 
@@ -163,6 +166,70 @@ TEST_F(LifecycleTest, ActorUnknownHookMacroIsCalledForUnhandledMessage)
 
     EXPECT_EQ(test_ipc_hooks_unknown_count(), 1);
     EXPECT_EQ(test_ipc_hooks_unknown_id(), unknown_id);
+}
+
+TEST_F(LifecycleTest, ActorFailureRejectsNullActor)
+{
+    EXPECT_EQ(ipc_actor_fail(nullptr, -EIO), -EINVAL);
+}
+
+TEST_F(LifecycleTest, ActorFailureWithDefaultSupervisionDoesNothing)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+
+    EXPECT_EQ(ipc_actor_fail(&g_a, -EIO), 0);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 0);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->restart_count, 0);
+}
+
+TEST_F(LifecycleTest, ActorFailureWithRestartSupervisionRestartsAndCallsHooks)
+{
+    test_ipc_hooks_reset_counters();
+    test_ipc_hooks_register_actor();
+    struct ipc_actor *actor = test_ipc_hooks_actor();
+
+    EXPECT_EQ(ipc_actor_fail(actor, -EIO), 0);
+
+    EXPECT_EQ(test_ipc_hooks_failure_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_failure_reason(), -EIO);
+    EXPECT_EQ(test_ipc_hooks_stop_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_start_count(), 1);
+    EXPECT_EQ(mock_port_actor_state(actor)->restart_count, 1);
+}
+
+TEST_F(LifecycleTest, ActorFailureWithStopSupervisionStopsActor)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+    _ipc_actor_register_supervision_static(&g_a, IPC_SUPERVISE_STOP);
+
+    EXPECT_EQ(ipc_actor_fail(&g_a, -EIO), 0);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->restart_count, 0);
+}
+
+TEST_F(LifecycleTest, ActorFailurePropagatesRestartErrorAndSkipsStartHook)
+{
+    test_ipc_hooks_reset_counters();
+    test_ipc_hooks_register_actor();
+    struct ipc_actor *actor = test_ipc_hooks_actor();
+
+    mock_port_set_next_restart_rc(-EAGAIN);
+    EXPECT_EQ(ipc_actor_fail(actor, -EIO), -EAGAIN);
+
+    EXPECT_EQ(test_ipc_hooks_failure_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_stop_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_start_count(), 0);
+    EXPECT_EQ(mock_port_actor_state(actor)->restart_count, 1);
+}
+
+TEST_F(LifecycleTest, ActorFailureRejectsInvalidSupervisionStrategy)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+    _ipc_actor_register_supervision_static(&g_a, static_cast<ipc_supervision_strategy_t>(99));
+
+    EXPECT_EQ(ipc_actor_fail(&g_a, -EIO), -EINVAL);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 0);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->restart_count, 0);
 }
 
 } // namespace
