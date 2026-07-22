@@ -3,7 +3,7 @@
 
 IPC_CMD_DEFINE(HookUnhandledCmd, { int value; });
 
-IPC_ACTOR_DEFINE(hook_actor, "hook", 1024, 0, 4);
+IPC_ACTOR_DEFINE(hook_actor, "hook", 1024, 0, 4, IPC_MESSAGE_MAX(HookUnhandledCmd));
 
 static int hook_start_count;
 static int hook_stop_count;

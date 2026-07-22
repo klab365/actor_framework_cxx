@@ -21,9 +21,9 @@ int ipc_port_restart_actor(struct ipc_actor *a);
 /* ── Per-actor transport (unchanged) ─────────────────────────────────────── */
 
 /*
- * ipc_port_send MUST copy `msg` synchronously; it must not retain a
- * pointer to the message. The publish path reuses one struct ipc_msg
- * across all subscribers.
+ * ipc_port_send MUST copy the message header and `msg->size` payload bytes
+ * synchronously; it must not retain pointers supplied by the caller. The
+ * publish path reuses one struct ipc_msg across all subscribers.
  */
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
 int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg);

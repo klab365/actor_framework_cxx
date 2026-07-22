@@ -13,5 +13,10 @@ struct ipc_port_state {
     k_thread_stack_t *stack;
     struct k_work_delayable delayed_work;
     struct ipc_msg delayed_msg;
+    char *delayed_payload;
+    char *send_slot;
+    char *recv_slot;
+    size_t slot_size;
+    struct k_spinlock send_lock;
     struct ipc_actor *owner;
 };

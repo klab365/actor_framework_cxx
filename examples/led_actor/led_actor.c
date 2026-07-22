@@ -17,7 +17,8 @@ static unsigned g_restart_count = 0;
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
+IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8,
+                 IPC_MESSAGE_MAX(LedOn, LedOff, LedBlink, GetLedStateRequest, LedFault));
 IPC_SUPERVISE(led_actor, IPC_SUPERVISE_RESTART);
 
 IPC_START_HOOK(led_actor, led_on_start)

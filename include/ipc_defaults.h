@@ -1,14 +1,14 @@
 /*
- * ipc_defaults.h — Compile-time message payload default.
+ * ipc_defaults.h — Compile-time default actor payload capacity.
  *
- * IPC_PAYLOAD_SIZE controls the inline payload bytes carried by
- * struct ipc_msg; IPC_*_DEFINE payloads must fit this cap at compile time.
+ * IPC_PAYLOAD_SIZE is kept as a compatibility fallback for low-level/manual
+ * actor setup. Normal actor declarations should pass an explicit per-actor max
+ * payload size, often with IPC_MESSAGE_MAX(...), so each actor queue is
+ * sized for the messages that actor actually receives.
  *
  * Override paths:
  *   1. Define IPC_PAYLOAD_SIZE before including <ipc.h>.
  *   2. Pass -DIPC_PAYLOAD_SIZE=... globally.
- *   3. On Zephyr, set CONFIG_ACTOR_PAYLOAD_SIZE; the Zephyr ipc_config.h
- *      maps it before including this default.
  */
 #pragma once
 

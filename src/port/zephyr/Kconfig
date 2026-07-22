@@ -8,15 +8,3 @@ menuconfig ACTOR
 	  Lightweight active-object framework for embedded targets.
 	  Enable to include the actor runtime, message dispatch, and
 	  port shims in your application.
-
-if ACTOR
-
-config ACTOR_PAYLOAD_SIZE
-	int "Maximum IPC message payload size in bytes"
-	default 32
-	help
-	  Largest inline message payload the framework will carry.
-	  All IPC_*_DEFINE'd payloads must fit. Actor stacks and queues are
-	  declared per actor with IPC_ACTOR_DEFINE().
-
-endif # ACTOR

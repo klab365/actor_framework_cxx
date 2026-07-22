@@ -19,12 +19,11 @@ extern "C" {
 
 /**
  * @def IPC_PAYLOAD_SIZE
- * @brief Maximum inline payload size, in bytes, for every ipc_msg.
+ * @brief Default actor queue payload capacity, in bytes.
  *
- * Consumers may override it per translation unit by defining it before
- * including <ipc.h>, or globally with a compiler definition. Zephyr users may
- * set CONFIG_ACTOR_PAYLOAD_SIZE; the port-side ipc_config.h maps it to
- * IPC_PAYLOAD_SIZE before the public default is used.
+ * Compatibility fallback used by legacy code that does not explicitly size an
+ * actor queue. New actor declarations should pass an explicit per-actor max
+ * payload size, often with IPC_MESSAGE_MAX(...).
  */
 
 /* ── Message kinds ──────────────────────────────────────────────────────── */
@@ -37,6 +36,55 @@ typedef enum {
     /** Command message, routed to exactly one registered actor. */
     IPC_CMD,
 } ipc_msg_kind_t;
+
+/* ── Message sizing ─────────────────────────────────────────────────────── */
+
+#ifdef __cplusplus
+#define IPC_ALIGNOF(type) alignof(type)
+#else
+#define IPC_ALIGNOF(type) _Alignof(type)
+#endif
+
+#define IPC_ALIGN_UP(value, alignment) (((value) + (alignment) - 1U) & ~((alignment) - 1U))
+
+/** @brief Header stored at the front of each port-owned queue slot. */
+typedef struct {
+    uint32_t id;
+    ipc_msg_kind_t kind;
+    size_t size;
+} ipc_msg_slot_header_t;
+
+#define IPC_MSG_SLOT_HEADER_SIZE \
+    IPC_ALIGN_UP(sizeof(ipc_msg_slot_header_t), IPC_ALIGNOF(max_align_t))
+#define IPC_MSG_SLOT_SIZE(max_payload_size) (IPC_MSG_SLOT_HEADER_SIZE + (max_payload_size))
+
+#define IPC_MESSAGE_SIZE(MsgType) sizeof(MsgType##_payload_t)
+#define IPC_MESSAGE_MAX1(A) IPC_MESSAGE_SIZE(A)
+#define IPC_MESSAGE_MAX2(A, B) \
+    (IPC_MESSAGE_SIZE(A) > IPC_MESSAGE_SIZE(B) ? IPC_MESSAGE_SIZE(A) : IPC_MESSAGE_SIZE(B))
+#define IPC_MESSAGE_MAX3(A, B, C) \
+    (IPC_MESSAGE_MAX2(A, B) > IPC_MESSAGE_SIZE(C) ? IPC_MESSAGE_MAX2(A, B) : IPC_MESSAGE_SIZE(C))
+#define IPC_MESSAGE_MAX4(A, B, C, D)                                             \
+    (IPC_MESSAGE_MAX3(A, B, C) > IPC_MESSAGE_SIZE(D) ? IPC_MESSAGE_MAX3(A, B, C) \
+                                                     : IPC_MESSAGE_SIZE(D))
+#define IPC_MESSAGE_MAX5(A, B, C, D, E)                                                \
+    (IPC_MESSAGE_MAX4(A, B, C, D) > IPC_MESSAGE_SIZE(E) ? IPC_MESSAGE_MAX4(A, B, C, D) \
+                                                        : IPC_MESSAGE_SIZE(E))
+#define IPC_MESSAGE_MAX6(A, B, C, D, E, F)                                                   \
+    (IPC_MESSAGE_MAX5(A, B, C, D, E) > IPC_MESSAGE_SIZE(F) ? IPC_MESSAGE_MAX5(A, B, C, D, E) \
+                                                           : IPC_MESSAGE_SIZE(F))
+#define IPC_MESSAGE_MAX7(A, B, C, D, E, F, G)                                                      \
+    (IPC_MESSAGE_MAX6(A, B, C, D, E, F) > IPC_MESSAGE_SIZE(G) ? IPC_MESSAGE_MAX6(A, B, C, D, E, F) \
+                                                              : IPC_MESSAGE_SIZE(G))
+#define IPC_MESSAGE_MAX8(A, B, C, D, E, F, G, H)                 \
+    (IPC_MESSAGE_MAX7(A, B, C, D, E, F, G) > IPC_MESSAGE_SIZE(H) \
+         ? IPC_MESSAGE_MAX7(A, B, C, D, E, F, G)                 \
+         : IPC_MESSAGE_SIZE(H))
+#define IPC_MESSAGE_MAX_SELECT(_1, _2, _3, _4, _5, _6, _7, _8, NAME, ...) NAME
+#define IPC_MESSAGE_MAX(...)                                                                       \
+    IPC_MESSAGE_MAX_SELECT(__VA_ARGS__, IPC_MESSAGE_MAX8, IPC_MESSAGE_MAX7, IPC_MESSAGE_MAX6,      \
+                           IPC_MESSAGE_MAX5, IPC_MESSAGE_MAX4, IPC_MESSAGE_MAX3, IPC_MESSAGE_MAX2, \
+                           IPC_MESSAGE_MAX1)(__VA_ARGS__)
 
 /* ── Message descriptor ───────────────────────────────────────────────── */
 
@@ -66,7 +114,7 @@ struct ipc_actor;
 
 /* ── Wire message ──────────────────────────────────────────────────────── */
 
-/** @brief Raw message stored in actor queues and passed to actor handlers. */
+/** @brief Raw message passed to actor handlers and copied by port queues. */
 struct ipc_msg {
     /** Message ID matching ipc_msg_desc_t::id. */
     uint32_t id;
@@ -74,8 +122,11 @@ struct ipc_msg {
     /** Message delivery kind. */
     ipc_msg_kind_t kind;
 
-    /** Inline payload storage. Only the descriptor's size bytes are valid. */
-    uint8_t payload[IPC_PAYLOAD_SIZE];
+    /** Payload size in bytes. */
+    size_t size;
+
+    /** Payload bytes valid for the duration of the handler/port call. */
+    const uint8_t *payload;
 };
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
@@ -90,6 +141,9 @@ struct ipc_actor_cfg {
 
     /** Depth of the actor's message queue. */
     size_t queue_depth;
+
+    /** Maximum payload size accepted by this actor's queue. */
+    size_t max_payload_size;
 };
 
 /**
@@ -183,7 +237,7 @@ struct ipc_actor {
 };
 
 /**
- * @def IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth)
+ * @def IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
  * @brief Statically declare an actor for the active platform port.
  *
  * The active port supplies this macro. It creates the actor object and any
@@ -223,20 +277,18 @@ struct ipc_actor {
  * @brief Define a command message type and its payload structure.
  *
  * Creates `<TypeName>_payload_t` from @p fields and a static ipc_msg_desc_t
- * named @p TypeName. The payload must fit in IPC_PAYLOAD_SIZE.
+ * named @p TypeName. The payload must fit the max payload size of every actor that handles this message.
  *
  * @param TypeName Message descriptor symbol and payload type prefix.
  * @param fields Struct body, for example `{ uint32_t value; }`.
  */
-#define IPC_CMD_DEFINE(TypeName, ...)                                 \
-    typedef struct __VA_ARGS__ TypeName##_payload_t;                  \
-    static_assert(sizeof(TypeName##_payload_t) <= IPC_PAYLOAD_SIZE,   \
-                  #TypeName " CMD payload exceeds IPC_PAYLOAD_SIZE"); \
-    static ipc_msg_desc_t TypeName __attribute__((unused)) = {        \
-        .id   = 0,                                                    \
-        .kind = IPC_CMD,                                              \
-        .size = sizeof(TypeName##_payload_t),                         \
-        .name = #TypeName,                                            \
+#define IPC_CMD_DEFINE(TypeName, ...)                          \
+    typedef struct __VA_ARGS__ TypeName##_payload_t;           \
+    static ipc_msg_desc_t TypeName __attribute__((unused)) = { \
+        .id   = 0,                                             \
+        .kind = IPC_CMD,                                       \
+        .size = sizeof(TypeName##_payload_t),                  \
+        .name = #TypeName,                                     \
     }
 
 /**
@@ -244,20 +296,18 @@ struct ipc_actor {
  * @brief Define an event message type and its payload structure.
  *
  * Creates `<TypeName>_payload_t` from @p fields and a static ipc_msg_desc_t
- * named @p TypeName. The payload must fit in IPC_PAYLOAD_SIZE.
+ * named @p TypeName. The payload must fit the max payload size of every actor that handles this message.
  *
  * @param TypeName Message descriptor symbol and payload type prefix.
  * @param fields Struct body, for example `{ uint32_t value; }`.
  */
-#define IPC_EVENT_DEFINE(TypeName, ...)                                 \
-    typedef struct __VA_ARGS__ TypeName##_payload_t;                    \
-    static_assert(sizeof(TypeName##_payload_t) <= IPC_PAYLOAD_SIZE,     \
-                  #TypeName " EVENT payload exceeds IPC_PAYLOAD_SIZE"); \
-    static ipc_msg_desc_t TypeName __attribute__((unused)) = {          \
-        .id   = 0,                                                      \
-        .kind = IPC_EVENT,                                              \
-        .size = sizeof(TypeName##_payload_t),                           \
-        .name = #TypeName,                                              \
+#define IPC_EVENT_DEFINE(TypeName, ...)                        \
+    typedef struct __VA_ARGS__ TypeName##_payload_t;           \
+    static ipc_msg_desc_t TypeName __attribute__((unused)) = { \
+        .id   = 0,                                             \
+        .kind = IPC_EVENT,                                     \
+        .size = sizeof(TypeName##_payload_t),                  \
+        .name = #TypeName,                                     \
     }
 
 /* ── Handler dispatch ───────────────────────────────────────────────────── */

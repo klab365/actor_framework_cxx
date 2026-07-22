@@ -22,8 +22,10 @@ static bool pong_restart_pending;
 static unsigned int pong_restart_count;
 
 /* Each actor declares exact-size static stack/msgq storage via ipc.h. */
-IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4);
-IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4);
+IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4,
+                 IPC_MESSAGE_MAX(BasicPong, BasicStatusResponse));
+IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4,
+                 IPC_MESSAGE_MAX(BasicPing, BasicStatusRequest, BasicFault));
 IPC_SUPERVISE(pong_actor, IPC_SUPERVISE_RESTART);
 
 IPC_START_HOOK(ping_actor, ping_on_start)

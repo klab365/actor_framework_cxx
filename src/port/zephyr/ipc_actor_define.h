@@ -21,7 +21,9 @@ struct ipc_actor;
 extern "C" {
 #endif
 int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stack,
-                                             size_t stack_size, char *msgq_buf, size_t queue_depth);
+                                             size_t stack_size, char *msgq_buf, size_t queue_depth,
+                                             size_t slot_size, char *delayed_payload,
+                                             char *send_slot, char *recv_slot);
 #ifdef __cplusplus
 }
 #endif
@@ -30,20 +32,27 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
  * stack_size/priority/queue_depth. Preprocessor substitution is purely
  * textual, so a parameter named `stack_size` would also rewrite the
  * designated initializer `.stack_size`. */
-#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth)                            \
+#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)               \
     _Static_assert((stack_sz) > 0, #actor_sym ": stack_size must be positive");                    \
     _Static_assert((qdepth) > 0, #actor_sym ": queue_depth must be positive");                     \
+    _Static_assert((max_payload) >= 0, #actor_sym ": max_payload must be non-negative");           \
+    enum { actor_sym##_max_payload_size = (max_payload) };                                         \
+    enum { actor_sym##_msg_slot_size = IPC_MSG_SLOT_SIZE(max_payload) };                           \
     K_THREAD_STACK_DEFINE(actor_sym##_stack, (stack_sz));                                          \
-    static char actor_sym##_msgq_buf[(qdepth) * sizeof(struct ipc_msg)];                           \
+    static char actor_sym##_msgq_buf[(qdepth) * actor_sym##_msg_slot_size];                        \
+    static char actor_sym##_delayed_payload[(max_payload) > 0 ? (max_payload) : 1];                \
+    static char actor_sym##_send_slot[actor_sym##_msg_slot_size];                                  \
+    static char actor_sym##_recv_slot[actor_sym##_msg_slot_size];                                  \
     static struct ipc_port_state actor_sym##_port_state;                                           \
     static struct ipc_actor actor_sym = {                                                          \
         .name    = (actor_name),                                                                   \
         .handler = ipc_dispatch_actor_handlers,                                                    \
         .cfg =                                                                                     \
             {                                                                                      \
-                .stack_size  = K_THREAD_STACK_SIZEOF(actor_sym##_stack),                           \
-                .priority    = (prio),                                                             \
-                .queue_depth = sizeof(actor_sym##_msgq_buf) / sizeof(struct ipc_msg),              \
+                .stack_size       = K_THREAD_STACK_SIZEOF(actor_sym##_stack),                      \
+                .priority         = (prio),                                                        \
+                .queue_depth      = sizeof(actor_sym##_msgq_buf) / actor_sym##_msg_slot_size,      \
+                .max_payload_size = (max_payload),                                                 \
             },                                                                                     \
         .port  = &(actor_sym##_port_state),                                                        \
         ._next = NULL,                                                                             \
@@ -52,29 +61,25 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
     {                                                                                              \
         (void) ipc_port_register_static_actor_resources(                                           \
             &(actor_sym), (void *) &(actor_sym##_stack), K_THREAD_STACK_SIZEOF(actor_sym##_stack), \
-            (actor_sym##_msgq_buf), sizeof(actor_sym##_msgq_buf) / sizeof(struct ipc_msg));        \
+            (actor_sym##_msgq_buf), sizeof(actor_sym##_msgq_buf) / actor_sym##_msg_slot_size,      \
+            actor_sym##_msg_slot_size, actor_sym##_delayed_payload, actor_sym##_send_slot,         \
+            actor_sym##_recv_slot);                                                                \
         _ipc_actor_register_static(&(actor_sym));                                                  \
         return 0;                                                                                  \
     }                                                                                              \
     SYS_INIT(actor_sym##_register_static_actor, PRE_KERNEL_2, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT)
 
-#define IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn)                               \
-    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,     \
-                           const struct ipc_msg *raw_msg);                             \
-    static void actor_sym##_##handler_fn##_ipc_trampoline(                             \
-        struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)    \
-    {                                                                                  \
-        handler_fn(self, (const MsgType##_payload_t *) payload, raw_msg);              \
-    }                                                                                  \
-    static int actor_sym##_##handler_fn##_register_handler(void)                       \
-    {                                                                                  \
-        _ipc_actor_register_handler_static(&(actor_sym), &(MsgType),                   \
-                                           actor_sym##_##handler_fn##_ipc_trampoline); \
-        return 0;                                                                      \
-    }                                                                                  \
-    SYS_INIT(actor_sym##_##handler_fn##_register_handler, PRE_KERNEL_2,                \
-             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);                                     \
-    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,     \
+#define IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn)                            \
+    _IPC_ACTOR_HANDLE_ADAPTER(actor_sym, MsgType, handler_fn)                       \
+    static int actor_sym##_##handler_fn##_register_handler(void)                    \
+    {                                                                               \
+        _ipc_actor_register_handler_static(&(actor_sym), &(MsgType),                \
+                                           actor_sym##_##handler_fn##_ipc_adapter); \
+        return 0;                                                                   \
+    }                                                                               \
+    SYS_INIT(actor_sym##_##handler_fn##_register_handler, PRE_KERNEL_2,             \
+             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);                                  \
+    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,  \
                            const struct ipc_msg *raw_msg)
 
 #define IPC_START_HOOK(actor_sym, hook_fn)                            \

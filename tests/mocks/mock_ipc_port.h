@@ -31,12 +31,14 @@ typedef struct {
     int send_after_count;
     uint32_t last_send_after_delay_ms;
     struct ipc_msg last_send_msg;
+    uint8_t last_send_payload[512];
     bool has_last_send_msg;
     /* Per-actor "send_after" is a single-slot replacement. The mock
      * records the currently-scheduled delayed message (if any) here so
      * tests can assert that a second send_after replaces the first. */
     bool has_pending_send_after;
     struct ipc_msg pending_send_after_msg;
+    uint8_t pending_send_after_payload[512];
     uint32_t pending_send_after_delay_ms;
 } mock_actor_state_t;
 

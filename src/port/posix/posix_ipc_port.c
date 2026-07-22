@@ -23,6 +23,52 @@ static struct ipc_port_state *port_of(struct ipc_actor *a)
     return (struct ipc_port_state *) a->port;
 }
 
+static size_t actor_max_payload_size(const struct ipc_actor *a)
+{
+    return a->cfg.max_payload_size > 0 ? a->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+}
+
+/* ── Queue slot helpers ─────────────────────────────────────────────────── */
+
+static uint8_t *slot_at(struct ipc_port_state *p, size_t index)
+{
+    return p->ring + (index * p->slot_size);
+}
+
+static int store_msg(struct ipc_port_state *p, uint8_t *slot, const struct ipc_msg *msg)
+{
+    if (msg->size > p->slot_size - IPC_MSG_SLOT_HEADER_SIZE) {
+        return -EMSGSIZE;
+    }
+
+    ipc_msg_slot_header_t *header = (ipc_msg_slot_header_t *) slot;
+    header->id                    = msg->id;
+    header->kind                  = msg->kind;
+    header->size                  = msg->size;
+
+    uint8_t *payload              = slot + IPC_MSG_SLOT_HEADER_SIZE;
+    if (msg->size > 0) {
+        if (msg->payload) {
+            memcpy(payload, msg->payload, msg->size);
+        } else {
+            memset(payload, 0, msg->size);
+        }
+    }
+    return 0;
+}
+
+static struct ipc_msg load_msg(uint8_t *slot)
+{
+    ipc_msg_slot_header_t *header = (ipc_msg_slot_header_t *) slot;
+    struct ipc_msg msg            = {
+        .id      = header->id,
+        .kind    = header->kind,
+        .size    = header->size,
+        .payload = slot + IPC_MSG_SLOT_HEADER_SIZE,
+    };
+    return msg;
+}
+
 /* ── Actor thread ────────────────────────────────────────────────────────── */
 
 extern struct ipc_actor *_ipc_actor_list;
@@ -38,7 +84,8 @@ static void *ipc_thread_fn(void *arg)
             pthread_cond_wait(&p->cond, &p->lock);
         }
         while (p->count > 0) {
-            struct ipc_msg msg = p->ring[p->head];
+            memcpy(p->recv_slot, slot_at(p, p->head), p->slot_size);
+            struct ipc_msg msg = load_msg(p->recv_slot);
             p->head            = (p->head + 1) % p->capacity;
             p->count--;
             pthread_mutex_unlock(&p->lock);
@@ -57,8 +104,18 @@ int ipc_port_actor_init(struct ipc_actor *a)
     struct ipc_port_state *p = port_of(a);
     size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
 
-    p->ring                  = (struct ipc_msg *) calloc(cap, sizeof(struct ipc_msg));
-    if (!p->ring) {
+    size_t max_payload       = actor_max_payload_size(a);
+    p->slot_size             = IPC_MSG_SLOT_SIZE(max_payload);
+    p->ring                  = (uint8_t *) calloc(cap, p->slot_size);
+    p->recv_slot             = (uint8_t *) calloc(1, p->slot_size);
+    p->delay_payload         = (uint8_t *) calloc(1, max_payload > 0 ? max_payload : 1);
+    if (!p->ring || !p->recv_slot || !p->delay_payload) {
+        free(p->ring);
+        free(p->recv_slot);
+        free(p->delay_payload);
+        p->ring          = NULL;
+        p->recv_slot     = NULL;
+        p->delay_payload = NULL;
         return -ENOMEM;
     }
 
@@ -116,6 +173,7 @@ static void *delay_thread_fn(void *arg)
     bool cancelled     = p->delay_cancel;
     p->delay_cancel    = false;
     struct ipc_msg msg = p->delay_msg;
+    msg.payload        = p->delay_payload;
     pthread_mutex_unlock(&p->delay_lock);
 
     if (!cancelled) {
@@ -144,10 +202,14 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     if (p->count >= p->capacity) {
         rc = -ENOMEM;
     } else {
-        p->ring[p->tail] = *msg;
-        p->tail          = (p->tail + 1) % p->capacity;
-        p->count++;
-        pthread_cond_signal(&p->cond);
+        rc = store_msg(p, slot_at(p, p->tail), msg);
+        if (rc == 0) {
+            p->tail = (p->tail + 1) % p->capacity;
+        }
+        if (rc == 0) {
+            p->count++;
+            pthread_cond_signal(&p->cond);
+        }
     }
     pthread_mutex_unlock(&p->lock);
     return rc;
@@ -180,17 +242,34 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
         p->delay_cancel = false;
         p->delay_active = false;
     }
-    p->delay_msg = *msg;
-    p->delay_ms  = delay_ms;
+    if (msg->size > actor_max_payload_size(a)) {
+        rc = -EMSGSIZE;
+    } else {
+        p->delay_msg         = *msg;
+        p->delay_msg.payload = p->delay_payload;
+        if (msg->size > 0) {
+            if (msg->payload) {
+                memcpy(p->delay_payload, msg->payload, msg->size);
+            } else {
+                memset(p->delay_payload, 0, msg->size);
+            }
+        }
+        p->delay_ms = delay_ms;
+    }
 
     /* If pthread_create fails, leave delay_active false so the next call
      * doesn't try to join a thread that was never created. */
-    rc           = pthread_create(&p->delay_thread, NULL, delay_thread_fn, a);
     if (rc == 0) {
-        p->delay_active = true;
+        rc = pthread_create(&p->delay_thread, NULL, delay_thread_fn, a);
+        if (rc == 0) {
+            p->delay_active = true;
+        }
     }
     pthread_mutex_unlock(&p->delay_lock);
 
+    if (rc == EMSGSIZE || rc == -EMSGSIZE) {
+        return -EMSGSIZE;
+    }
     return rc == 0 ? 0 : -ENOMEM;
 }
 
@@ -204,7 +283,11 @@ static void cleanup_actor(struct ipc_actor *a)
     pthread_cond_destroy(&p->delay_cond);
 
     free(p->ring);
-    p->ring = NULL;
+    free(p->recv_slot);
+    free(p->delay_payload);
+    p->ring          = NULL;
+    p->recv_slot     = NULL;
+    p->delay_payload = NULL;
 }
 
 int ipc_port_run_all(void)
