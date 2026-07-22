@@ -17,7 +17,11 @@ IPC_CMD_DEFINE(BasicStatusResponse, {
 static atomic_uint basic_ping_count;
 static atomic_uint basic_pong_count;
 
-IPC_HANDLE(BasicPing, on_basic_ping)
+/* Each actor declares exact-size static stack/msgq storage via ipc.h. */
+IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", 1024, K_PRIO_PREEMPT(7), 4);
+IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", 2048, K_PRIO_PREEMPT(7), 4);
+
+IPC_ACTOR_HANDLE(pong_actor, BasicPing, on_basic_ping)
 {
     ARG_UNUSED(self);
 
@@ -31,7 +35,7 @@ IPC_HANDLE(BasicPing, on_basic_ping)
     }
 }
 
-IPC_HANDLE(BasicPong, on_basic_pong)
+IPC_ACTOR_HANDLE(ping_actor, BasicPong, on_basic_pong)
 {
     (void) self;
     (void) raw_msg;
@@ -48,7 +52,7 @@ IPC_HANDLE(BasicPong, on_basic_pong)
     }
 }
 
-IPC_HANDLE(BasicStatusRequest, on_basic_status_request)
+IPC_ACTOR_HANDLE(pong_actor, BasicStatusRequest, on_basic_status_request)
 {
     (void) self;
     (void) raw_msg;
@@ -63,7 +67,7 @@ IPC_HANDLE(BasicStatusRequest, on_basic_status_request)
     ipc_send(BasicStatusResponse, response);
 }
 
-IPC_HANDLE(BasicStatusResponse, on_basic_status_response)
+IPC_ACTOR_HANDLE(ping_actor, BasicStatusResponse, on_basic_status_response)
 {
     (void) self;
     (void) raw_msg;
@@ -72,51 +76,9 @@ IPC_HANDLE(BasicStatusResponse, on_basic_status_response)
            msg->ping_count, msg->pong_count);
 }
 
-static void ping_actor_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, BasicPong, on_basic_pong)
-    IPC_DISPATCH_TO(msg, BasicStatusResponse, on_basic_status_response)
-    IPC_UNKNOWN({ printk("ipc basic: ping actor unknown message id=0x%08x\n", msg->id); });
-}
-
-static void pong_actor_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, BasicPing, on_basic_ping)
-    IPC_DISPATCH_TO(msg, BasicStatusRequest, on_basic_status_request)
-    IPC_UNKNOWN({ printk("ipc basic: pong actor unknown message id=0x%08x\n", msg->id); });
-}
-
-/* Each actor declares exact-size static stack/msgq storage via ipc.h. */
-IPC_ACTOR_DEFINE(ping_actor, "ipc_ping", ping_actor_handler, 1024, K_PRIO_PREEMPT(7), 4);
-IPC_ACTOR_DEFINE(pong_actor, "ipc_pong", pong_actor_handler, 2048, K_PRIO_PREEMPT(7), 4);
-
 static int basic_actor_init(void)
 {
-    int rc = ipc_register(&ping_actor, &BasicPong);
-    if (rc != 0) {
-        printk("ipc basic: BasicPong register failed: %d\n", rc);
-        return rc;
-    }
-
-    rc = ipc_register(&pong_actor, &BasicPing);
-    if (rc != 0) {
-        printk("ipc basic: BasicPing register failed: %d\n", rc);
-        return rc;
-    }
-
-    rc = ipc_register(&pong_actor, &BasicStatusRequest);
-    if (rc != 0) {
-        printk("ipc basic: BasicStatusRequest register failed: %d\n", rc);
-        return rc;
-    }
-
-    rc = ipc_register(&ping_actor, &BasicStatusResponse);
-    if (rc != 0) {
-        printk("ipc basic: BasicStatusResponse register failed: %d\n", rc);
-        return rc;
-    }
-
-    rc = ipc_start_all_actors();
+    int rc = ipc_start_all_actors();
     if (rc != 0) {
         printk("ipc basic: actor start failed: %d\n", rc);
         return rc;

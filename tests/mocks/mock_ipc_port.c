@@ -144,21 +144,6 @@ uint32_t mock_port_pending_send_after_delay_ms(struct ipc_actor *a)
 
 /* ── ipc_port_* seam implementations ────────────────────────────────────── */
 
-/* Table lock is a no-op for the mock — tests are single-threaded by
- * default and the registration/subscription paths in ipc.c already guard
- * their tables via this lock. We still implement it as a real mutex so
- * any concurrent test that races two registrations is well-defined. */
-
-void ipc_port_table_lock(void)
-{
-    pthread_mutex_lock(&g_mock.lock);
-}
-
-void ipc_port_table_unlock(void)
-{
-    pthread_mutex_unlock(&g_mock.lock);
-}
-
 /* ── Per-actor lifecycle ────────────────────────────────────────────────── */
 
 int ipc_port_actor_init(struct ipc_actor *a)
@@ -210,6 +195,11 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
         a->handler(a, msg);
     }
     return rc;
+}
+
+int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
+{
+    return ipc_port_send(a, msg);
 }
 
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)

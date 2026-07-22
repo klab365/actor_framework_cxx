@@ -40,11 +40,9 @@ target_compile_options(mock_port PRIVATE -Wall -Wextra)
 # ── Unit tests ────────────────────────────────────────────────────────────
 
 add_executable(ipc_unit_test
-    unit/test_ipc_registry.cpp
     unit/test_ipc_send.cpp
     unit/test_ipc_lifecycle.cpp
     unit/test_ipc_error_paths.cpp
-    unit/test_ipc_dispatch.cpp
 )
 target_link_libraries(ipc_unit_test PRIVATE
     ipc_core

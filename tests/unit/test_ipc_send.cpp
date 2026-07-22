@@ -28,8 +28,105 @@ IPC_CMD_DEFINE(MsgB, { int y; });
 IPC_EVENT_DEFINE(EvtA, { int v; });
 IPC_EVENT_DEFINE(EvtB, { int v; });
 IPC_CMD_DEFINE(EmptyCmd, {}); /* desc->size == 0 */
+IPC_CMD_DEFINE(StaticHandledCmd, { int value; });
+IPC_EVENT_DEFINE(StaticHandledEvt, { int value; });
+
+int g_static_handler_calls;
+int g_static_handler_value;
+int g_static_event_calls;
+int g_static_event_value;
+
+static void on_static_handled_cmd(struct ipc_actor *self, const StaticHandledCmd_payload_t *msg,
+                                  const struct ipc_msg *raw_msg)
+{
+    (void) raw_msg;
+    EXPECT_NE(self, nullptr);
+    g_static_handler_calls++;
+    g_static_handler_value = msg->value;
+}
+
+static void on_static_handled_evt(struct ipc_actor *self, const StaticHandledEvt_payload_t *msg,
+                                  const struct ipc_msg *raw_msg)
+{
+    (void) raw_msg;
+    EXPECT_NE(self, nullptr);
+    g_static_event_calls++;
+    g_static_event_value = msg->value;
+}
+
+static void on_msg_a(struct ipc_actor *self, const MsgA_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) msg;
+    (void) raw_msg;
+}
+
+static void on_msg_b(struct ipc_actor *self, const MsgB_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) msg;
+    (void) raw_msg;
+}
+
+static void on_empty_cmd(struct ipc_actor *self, const EmptyCmd_payload_t *msg,
+                         const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) msg;
+    (void) raw_msg;
+}
+
+static void on_evt_a(struct ipc_actor *self, const EvtA_payload_t *msg,
+                     const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) msg;
+    (void) raw_msg;
+}
+
+void on_static_handled_cmd_shim(struct ipc_actor *self, const void *payload,
+                                const struct ipc_msg *raw_msg)
+{
+    on_static_handled_cmd(self, (const StaticHandledCmd_payload_t *) payload, raw_msg);
+}
+
+void on_static_handled_evt_shim(struct ipc_actor *self, const void *payload,
+                                const struct ipc_msg *raw_msg)
+{
+    on_static_handled_evt(self, (const StaticHandledEvt_payload_t *) payload, raw_msg);
+}
+
+void on_msg_a_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_msg_a(self, (const MsgA_payload_t *) payload, raw_msg);
+}
+
+void on_msg_b_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_msg_b(self, (const MsgB_payload_t *) payload, raw_msg);
+}
+
+void on_empty_cmd_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_empty_cmd(self, (const EmptyCmd_payload_t *) payload, raw_msg);
+}
+
+void on_evt_a_shim(struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)
+{
+    on_evt_a(self, (const EvtA_payload_t *) payload, raw_msg);
+}
 
 struct ipc_actor g_actor;
+
+void register_evt_a_subscriber(struct ipc_actor *actor, const char *name)
+{
+    memset(actor, 0, sizeof(*actor));
+    actor->name    = name;
+    actor->handler = nullptr;
+    _ipc_actor_register_handler_static(actor, &EvtA, on_evt_a_shim);
+}
 
 class SendTest : public ::testing::Test
 {
@@ -39,11 +136,15 @@ class SendTest : public ::testing::Test
         _ipc_reset_for_testing();
         mock_port_init();
         memset(&g_actor, 0, sizeof(g_actor));
-        g_actor.name    = "test_actor";
-        g_actor.handler = nullptr;
-        ASSERT_EQ(ipc_register(&g_actor, &MsgA), 0);
-        ASSERT_EQ(ipc_register(&g_actor, &MsgB), 0);
-        ASSERT_EQ(ipc_register(&g_actor, &EmptyCmd), 0);
+        g_static_handler_calls = 0;
+        g_static_handler_value = 0;
+        g_static_event_calls   = 0;
+        g_static_event_value   = 0;
+        g_actor.name           = "test_actor";
+        g_actor.handler        = nullptr;
+        _ipc_actor_register_handler_static(&g_actor, &MsgA, on_msg_a_shim);
+        _ipc_actor_register_handler_static(&g_actor, &MsgB, on_msg_b_shim);
+        _ipc_actor_register_handler_static(&g_actor, &EmptyCmd, on_empty_cmd_shim);
     }
     void TearDown() override
     {
@@ -51,6 +152,31 @@ class SendTest : public ::testing::Test
         mock_port_reset();
     }
 };
+
+TEST_F(SendTest, StaticHandlerActorRoutesWithoutExplicitRegister)
+{
+    struct ipc_actor static_actor = {};
+    static_actor.name             = "static_actor";
+    static_actor.handler          = ipc_dispatch_actor_handlers;
+
+    _ipc_actor_register_handler_static(&static_actor, &StaticHandledCmd,
+                                       on_static_handled_cmd_shim);
+    _ipc_actor_register_handler_static(&static_actor, &StaticHandledEvt,
+                                       on_static_handled_evt_shim);
+    mock_port_set_invoke_handlers(true);
+
+    StaticHandledCmd_payload_t payload = {.value = 123};
+    ASSERT_EQ(ipc_send_raw(&StaticHandledCmd, &payload), 0);
+
+    EXPECT_EQ(g_static_handler_calls, 1);
+    EXPECT_EQ(g_static_handler_value, 123);
+
+    StaticHandledEvt_payload_t event_payload = {.value = 456};
+    ASSERT_EQ(ipc_publish_raw(&StaticHandledEvt, &event_payload), 0);
+
+    EXPECT_EQ(g_static_event_calls, 1);
+    EXPECT_EQ(g_static_event_value, 456);
+}
 
 TEST_F(SendTest, SendUnknownIdReturnsNoEnt)
 {
@@ -102,10 +228,8 @@ TEST_F(SendTest, PublishWithoutSubscribersSucceeds)
 TEST_F(SendTest, PublishFansOutToSubscribers)
 {
     struct ipc_actor sub1, sub2;
-    memset(&sub1, 0, sizeof(sub1));
-    memset(&sub2, 0, sizeof(sub2));
-    ASSERT_EQ(ipc_subscribe(&sub1, &EvtA), 0);
-    ASSERT_EQ(ipc_subscribe(&sub2, &EvtA), 0);
+    register_evt_a_subscriber(&sub1, "sub1");
+    register_evt_a_subscriber(&sub2, "sub2");
 
     EvtA_payload_t payload = {.v = 99};
     ASSERT_EQ(ipc_publish_raw(&EvtA, &payload), 0);
@@ -122,8 +246,7 @@ TEST_F(SendTest, PublishFansOutToSubscribers)
 TEST_F(SendTest, PublishReturnsLastError)
 {
     struct ipc_actor sub;
-    memset(&sub, 0, sizeof(sub));
-    ASSERT_EQ(ipc_subscribe(&sub, &EvtA), 0);
+    register_evt_a_subscriber(&sub, "sub");
 
     EvtA_payload_t payload = {.v = 1};
     mock_port_set_send_should_fail(true);
@@ -132,11 +255,10 @@ TEST_F(SendTest, PublishReturnsLastError)
     EXPECT_EQ(rc, -ENOMEM);
 }
 
-TEST_F(SendTest, IsrPublishRequiresFrozenRegistry)
+TEST_F(SendTest, IsrPublishRequiresStartedActors)
 {
     struct ipc_actor sub;
-    memset(&sub, 0, sizeof(sub));
-    ASSERT_EQ(ipc_subscribe(&sub, &EvtA), 0);
+    register_evt_a_subscriber(&sub, "sub");
 
     EvtA_payload_t payload = {.v = 1};
     EXPECT_EQ(ipc_publish_isr_raw(&EvtA, &payload), -EPERM);
@@ -146,10 +268,8 @@ TEST_F(SendTest, IsrPublishRequiresFrozenRegistry)
 TEST_F(SendTest, IsrPublishFansOutAfterStartAll)
 {
     struct ipc_actor sub1, sub2;
-    memset(&sub1, 0, sizeof(sub1));
-    memset(&sub2, 0, sizeof(sub2));
-    ASSERT_EQ(ipc_subscribe(&sub1, &EvtA), 0);
-    ASSERT_EQ(ipc_subscribe(&sub2, &EvtA), 0);
+    register_evt_a_subscriber(&sub1, "sub1");
+    register_evt_a_subscriber(&sub2, "sub2");
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
     EvtA_payload_t payload = {.v = 77};
@@ -244,10 +364,8 @@ TEST_F(SendTest, PublishWithMixedSubscriberOutcomesReturnsLastError)
     /* "last error wins, but the loop keeps going" contract. With two
      * subscribers, the second's error is the returned one. */
     struct ipc_actor sub1, sub2;
-    memset(&sub1, 0, sizeof(sub1));
-    memset(&sub2, 0, sizeof(sub2));
-    ASSERT_EQ(ipc_subscribe(&sub1, &EvtA), 0);
-    ASSERT_EQ(ipc_subscribe(&sub2, &EvtA), 0);
+    register_evt_a_subscriber(&sub1, "sub1");
+    register_evt_a_subscriber(&sub2, "sub2");
 
     /* Fail only sub2's send. The mock has a single global fail-flag, so
      * sub1's send will also fail. To make the test meaningful, fail

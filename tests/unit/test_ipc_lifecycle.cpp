@@ -13,10 +13,17 @@ extern "C" {
 namespace
 {
 
-IPC_CMD_DEFINE(NoOpCmd, { int dummy; });
-IPC_EVENT_DEFINE(NoOpEvent, { int dummy; });
+IPC_CMD_DEFINE(LifecycleCmd, { int dummy; });
 
 struct ipc_actor g_a, g_b;
+
+static void lifecycle_cmd_handler(struct ipc_actor *self, const void *payload,
+                                  const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) payload;
+    (void) raw_msg;
+}
 
 static void define_test_actor(struct ipc_actor *a, const char *name, struct ipc_actor_cfg cfg)
 {
@@ -79,6 +86,18 @@ TEST_F(LifecycleTest, StopAllCallsStopOnEveryActor)
     EXPECT_EQ(mock_port_actor_state(&g_b)->stop_count, 1);
 }
 
+TEST_F(LifecycleTest, ReRegisteringExistingActorForHandlerDoesNotCorruptActorList)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0});
+
+    _ipc_actor_register_handler_static(&g_a, &LifecycleCmd, lifecycle_cmd_handler);
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&g_b)->start_count, 1);
+}
+
 TEST_F(LifecycleTest, StaticActorRegistrationPreservesCfgFields)
 {
     struct ipc_actor_cfg cfg = {
@@ -108,31 +127,6 @@ TEST_F(LifecycleTest, StartAllPropagatesFirstPortError)
     EXPECT_EQ(rc, -EINVAL);
     EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 1);
     EXPECT_EQ(mock_port_actor_state(&g_b)->start_count, 0);
-}
-
-TEST_F(LifecycleTest, LateRegisterFailsAfterStartAllFreezesRegistry)
-{
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    ASSERT_EQ(ipc_start_all_actors(), 0);
-
-    EXPECT_EQ(ipc_register(&g_a, &NoOpCmd), -EPERM);
-}
-
-TEST_F(LifecycleTest, LateSubscribeFailsAfterStartAllFreezesRegistry)
-{
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    ASSERT_EQ(ipc_start_all_actors(), 0);
-
-    EXPECT_EQ(ipc_subscribe(&g_a, &NoOpEvent), -EPERM);
-}
-
-TEST_F(LifecycleTest, LateUnsubscribeFailsAfterStartAllFreezesRegistry)
-{
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    ASSERT_EQ(ipc_subscribe(&g_a, &NoOpEvent), 0);
-    ASSERT_EQ(ipc_start_all_actors(), 0);
-
-    EXPECT_EQ(ipc_unsubscribe(&g_a, &NoOpEvent), -EPERM);
 }
 
 TEST_F(LifecycleTest, StopAllOnEmptyActorListIsNoop)

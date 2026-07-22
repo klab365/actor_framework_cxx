@@ -1,5 +1,5 @@
 /*
- * led_actor.c — LED actor: typed handlers, dispatch, registration.
+ * led_actor.c — LED actor: typed handlers and static routing.
  */
 #include "led_actor.h"
 #include <stdbool.h>
@@ -7,16 +7,18 @@
 
 /* ── Blink state ─────────────────────────────────────────────────────────── */
 
-/* Finite blink: 5 ticks, then stops. A real driver would cancel the
- * pending delayed msg on LedOff; that's a framework TODO (see refactors.md). */
 static int g_blink_remaining = 0;
 static uint32_t g_blink_period;
 static uint8_t g_blink_brightness;
 static bool g_disabled = false; /* set on LedFault; ignore further cmds */
 
+/* ── Actor instance ──────────────────────────────────────────────────────── */
+
+IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
+
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
-IPC_HANDLE(LedOn, led_on_handler)
+IPC_ACTOR_HANDLE(led_actor, LedOn, led_on_handler)
 {
     (void) self;
     (void) raw_msg;
@@ -28,7 +30,7 @@ IPC_HANDLE(LedOn, led_on_handler)
     printf("[led] LedOn brightness=%u\n", msg->brightness);
 }
 
-IPC_HANDLE(LedOff, led_off_handler)
+IPC_ACTOR_HANDLE(led_actor, LedOff, led_off_handler)
 {
     (void) self;
     (void) msg;
@@ -37,7 +39,7 @@ IPC_HANDLE(LedOff, led_off_handler)
     printf("[led] LedOff\n");
 }
 
-IPC_HANDLE(LedBlink, led_blink_handler)
+IPC_ACTOR_HANDLE(led_actor, LedBlink, led_blink_handler)
 {
     (void) self;
     (void) raw_msg;
@@ -62,7 +64,7 @@ IPC_HANDLE(LedBlink, led_blink_handler)
     }
 }
 
-IPC_HANDLE(GetLedStateRequest, get_led_state_handler)
+IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, get_led_state_handler)
 {
     (void) self;
     (void) raw_msg;
@@ -75,7 +77,7 @@ IPC_HANDLE(GetLedStateRequest, get_led_state_handler)
     ipc_send(GetLedStateResponse, resp);
 }
 
-IPC_HANDLE(LedFault, led_fault_handler)
+IPC_ACTOR_HANDLE(led_actor, LedFault, led_fault_handler)
 {
     (void) self;
     (void) raw_msg;
@@ -85,30 +87,7 @@ IPC_HANDLE(LedFault, led_fault_handler)
     g_blink_remaining = 0;
 }
 
-/* ── Dispatch ────────────────────────────────────────────────────────────── */
-
-static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, LedOn, led_on_handler)
-    IPC_DISPATCH_TO(msg, LedOff, led_off_handler)
-    IPC_DISPATCH_TO(msg, LedBlink, led_blink_handler)
-    IPC_DISPATCH_TO(msg, GetLedStateRequest, get_led_state_handler)
-    IPC_DISPATCH_TO(msg, LedFault, led_fault_handler)
-    IPC_DISPATCH_IGNORE_UNKNOWN();
-}
-
-/* ── Actor instance ──────────────────────────────────────────────────────── */
-
-IPC_ACTOR_DEFINE(led_actor, "led", led_handler, 512, 5, 8);
-
 int led_actor_module_init(void)
 {
-    // registering handlers for actor.
-    ipc_register(&led_actor, &LedOn);
-    ipc_register(&led_actor, &LedOff);
-    ipc_register(&led_actor, &LedBlink);
-    ipc_register(&led_actor, &GetLedStateRequest);
-    ipc_subscribe(&led_actor, &LedFault);
-
     return 0;
 }

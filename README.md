@@ -2,7 +2,7 @@
 
 A small **actor-model IPC framework** written in **C11** (with a **C++17**
 test suite). Each actor owns its own thread and message inbox; messages
-are typed and dispatched via `IPC_DISPATCH_TO`. The core is
+are typed and bound to actors with `IPC_ACTOR_HANDLE`. The core is
 platform-agnostic — POSIX (pthreads) and Zephyr (`k_msgq` / `k_thread`)
 live behind a single port seam.
 
@@ -76,93 +76,23 @@ IPC_CMD_DEFINE(GetLedStateResponse, {
 IPC_EVENT_DEFINE(LedFault, { uint32_t error_code; uint8_t channel; });
 ```
 
-### 2. Write a typed handler
+### 2. Define an actor and its typed handlers
 
 ```c
-IPC_HANDLE(LedOn, on_led_on) {
-    (void)self; (void)raw_msg;
+IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
+
+IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on)
+{
+    (void) self;
+    (void) raw_msg;
     /* `msg` is `const LedOn_payload_t *` — typed, no cast */
     set_led(msg->brightness);
 }
 ```
 
-The macro expands to a function with signature:
-
-```c
-static void on_led_on(struct ipc_actor *self,
-                      const LedOn_payload_t *msg,
-                      const struct ipc_msg *raw_msg);
-```
-
-### 3. Wire the dispatch chain
-
-```c
-static void led_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
-    IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
-    IPC_DISPATCH_TO(msg, GetLedStateRequest, on_get_state_request)
-    IPC_DISPATCH_IGNORE_UNKNOWN();
-}
-```
-
-`IPC_DISPATCH_TO` is a chainable `if-else` that pattern-matches on the
-message ID and binds the typed payload for you. The macro expands to
-an `if (msg->id == MsgType.id) { … } else` with **no terminating
-semicolon** — the next `IPC_DISPATCH_TO` is the `else` body. That
-shape is deliberate:
-
-- **Exactly one handler fires per message.** A bare-`if` macro
-  (without the `else`) would let every branch evaluate, so a hash
-  collision or a typo in a message name could silently invoke
-  multiple handlers. The chained `else` makes that impossible by
-  construction.
-- **The chain is a single C statement**, so it's safe to drop into
-  any statement context (e.g. inside another `if`) without the
-  classic dangling-else pitfall.
-
-Because the macro doesn't terminate with a `;`, every chain must end
-with an explicit unknown-message terminator:
-
-- **Ignore unmatched IDs intentionally:**
-  ```c
-  IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
-  IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
-  IPC_DISPATCH_IGNORE_UNKNOWN();
-  ```
-- **Run custom unmatched-ID handling:**
-  ```c
-  IPC_DISPATCH_TO(msg, LedOn,    on_led_on)
-  IPC_DISPATCH_TO(msg, LedOff,   on_led_off)
-  IPC_UNKNOWN({
-      printf("unknown message id=0x%08x\n", msg->id);
-  });
-  ```
-
-Do **not** add a `;` after each `IPC_DISPATCH_TO` line — that would
-break the chain (it would become a stray empty statement after the
-`else`), and do **not** write `else IPC_DISPATCH_TO(...)` — the `else`
-is already inside the macro.
-
-### 4. Create the actor and register messages
-
-```c
-IPC_ACTOR_DEFINE(led_actor, "led", led_handler, 512, 5, 8);
-
-int led_actor_init(void)
-{
-    ipc_register(&led_actor, &LedOn);
-    ipc_register(&led_actor, &LedOff);
-    ipc_register(&led_actor, &GetLedStateRequest);
-    ipc_subscribe(&led_actor, &LedFault);   /* event: pub/sub fan-out */
-    return 0;
-}
-```
-
-`ipc_register()` maps a CMD descriptor → actor (single target).
-`ipc_subscribe()` adds the actor to a fan-out list for an EVENT
-descriptor (one row per `(event_id, actor)` pair; duplicate
-subscriptions are silently idempotent).
+`IPC_ACTOR_HANDLE(actor, MsgType, handler_fn)` expands to a typed handler
+function plus static routing metadata. CMD handlers become single-target
+routes; EVENT handlers become fan-out subscriptions automatically.
 
 ### 5. Send messages (no `extern` needed)
 
@@ -176,7 +106,7 @@ ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
 /* Async request/response — two commands */
 ipc_send(GetLedStateRequest, (GetLedStateRequest_payload_t){.channel = 0});
 
-IPC_HANDLE(GetLedStateRequest, on_get_state_request) {
+IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
     (void)self; (void)raw_msg;
     ipc_send(GetLedStateResponse,
              (GetLedStateResponse_payload_t){.channel = msg->channel,
@@ -335,8 +265,9 @@ under `src/` is implementation detail and not exported to consumers.
 - **No `extern struct ipc_actor`** — `ipc_send` and `ipc_publish` route
   via the message ID; consumers never need a reference to the target actor.
 - **Lazy ID init** — message descriptor `.id` is FNV-1a-hashed from
-  `.name` on first register/subscribe/send. Route registration happens
-  during startup before `ipc_start_all_actors()` starts actor threads.
+  `.name` when static actor handler tables are registered, or on first send
+  for unregistered descriptors. Route registration happens during startup
+  before `ipc_start_all_actors()` starts actor threads.
 - **One delayed message per actor** — `ipc_send_after` replaces the
   previous pending delayed msg. The current implementation uses a
   per-actor delay primitive (POSIX: one helper `pthread` per actor;
@@ -349,12 +280,9 @@ under `src/` is implementation detail and not exported to consumers.
   implementation. New ports must implement the full `src/ipc_port.h`
   interface and provide their own per-actor state storage.
 - **Interrupt-context publish** — use `IPC_ISR_PUBLISH(EventType, payload)`
-  from interrupt context on ports whose `ipc_port_send()` is interrupt-safe.
-  It is valid only after `ipc_start_all_actors()` freezes registration and
-  subscription tables, and after the event descriptor ID has already been
-  initialized during startup (for example by `ipc_subscribe`). Regular
-  `ipc_send()` / `ipc_publish()` remain thread-context APIs because they may
-  take the registry mutex.
+  only after `ipc_start_all_actors()` succeeds. The event descriptor must
+  already be bound with `IPC_ACTOR_HANDLE`, and the active port's
+  `ipc_port_send_isr()` must be safe for its interrupt context.
 
 See `AGENTS.md` for contributor-facing guidance, including the
 "adding a new message kind" and "adding a new port" checklists.

@@ -96,9 +96,13 @@ static void on_tick(struct ipc_actor *self)
     }
 }
 
+/* ── Actor instance ──────────────────────────────────────────────────────── */
+
+IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 16);
+
 /* ── Typed handlers ──────────────────────────────────────────────────────── */
 
-IPC_HANDLE(ButtonTick, on_tick_msg)
+IPC_ACTOR_HANDLE(button_actor, ButtonTick, on_tick_msg)
 {
     (void) raw_msg;
     (void) msg;
@@ -107,7 +111,7 @@ IPC_HANDLE(ButtonTick, on_tick_msg)
     on_tick(self);
 }
 
-IPC_HANDLE(LedFault, on_fault)
+IPC_ACTOR_HANDLE(button_actor, LedFault, on_fault)
 {
     (void) self;
     (void) raw_msg;
@@ -122,24 +126,8 @@ IPC_HANDLE(LedFault, on_fault)
     g_fault_fired = false;
 }
 
-/* ── Dispatch ────────────────────────────────────────────────────────────── */
-
-static void button_handler(struct ipc_actor *self, const struct ipc_msg *msg)
-{
-    IPC_DISPATCH_TO(msg, ButtonTick, on_tick_msg)
-    IPC_DISPATCH_TO(msg, LedFault, on_fault)
-    IPC_DISPATCH_IGNORE_UNKNOWN();
-}
-
-/* ── Actor instance ──────────────────────────────────────────────────────── */
-
-IPC_ACTOR_DEFINE(button_actor, "button", button_handler, 1024, 5, 16);
-
 int button_actor_module_init(void)
 {
-    ipc_register(&button_actor, &ButtonTick);
-    ipc_subscribe(&button_actor, &LedFault);
-
     return 0;
 }
 
