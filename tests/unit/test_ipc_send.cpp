@@ -30,6 +30,11 @@ IPC_EVENT_DEFINE(EvtB, { int v; });
 IPC_CMD_DEFINE(EmptyCmd, {}); /* desc->size == 0 */
 IPC_CMD_DEFINE(StaticHandledCmd, { int value; });
 IPC_EVENT_DEFINE(StaticHandledEvt, { int value; });
+IPC_CMD_DEFINE(LargeCmd, { uint8_t bytes[64]; });
+IPC_CMD_DEFINE(SmallCmd, { uint8_t bytes[3]; });
+IPC_CMD_DEFINE(DefaultFallbackCmd, { int value; });
+static_assert(IPC_MESSAGE_MAX(SmallCmd, LargeCmd) == sizeof(LargeCmd_payload_t),
+              "IPC_MESSAGE_MAX returns largest payload size");
 
 int g_static_handler_calls;
 int g_static_handler_value;
@@ -187,6 +192,80 @@ TEST_F(SendTest, SendUnknownIdReturnsNoEnt)
         .name = "Unregistered",
     };
     EXPECT_EQ(ipc_send_raw(&Unregistered, nullptr), -ENOENT);
+}
+
+TEST_F(SendTest, PerActorMaxPayloadAllowsMessagesLargerThanGlobalDefault)
+{
+    struct ipc_actor large_actor     = {};
+    large_actor.name                 = "large_actor";
+    large_actor.cfg.max_payload_size = IPC_MESSAGE_MAX(LargeCmd);
+    _ipc_actor_register_handler_static(&large_actor, &LargeCmd, on_msg_a_shim);
+
+    LargeCmd_payload_t payload = {};
+    payload.bytes[0]           = 11;
+    payload.bytes[63]          = 99;
+
+    ASSERT_EQ(ipc_send_raw(&LargeCmd, &payload), 0);
+    const struct ipc_msg *m = mock_port_last_send_msg(&large_actor);
+    ASSERT_NE(m, nullptr);
+    EXPECT_EQ(m->size, sizeof(LargeCmd_payload_t));
+    EXPECT_EQ(m->payload[0], 11);
+    EXPECT_EQ(m->payload[63], 99);
+}
+
+TEST_F(SendTest, SendFailsWhenPayloadExceedsActorMax)
+{
+    struct ipc_actor small_actor     = {};
+    small_actor.name                 = "small_actor";
+    small_actor.cfg.max_payload_size = IPC_MESSAGE_MAX(SmallCmd);
+    _ipc_actor_register_handler_static(&small_actor, &LargeCmd, on_msg_a_shim);
+
+    LargeCmd_payload_t payload = {};
+    EXPECT_EQ(ipc_send_raw(&LargeCmd, &payload), -EMSGSIZE);
+    EXPECT_FALSE(mock_port_has_last_send_msg(&small_actor));
+}
+
+TEST_F(SendTest, SendAfterFailsWhenPayloadExceedsActorMax)
+{
+    struct ipc_actor small_actor     = {};
+    small_actor.name                 = "small_actor";
+    small_actor.cfg.max_payload_size = IPC_MESSAGE_MAX(SmallCmd);
+    _ipc_actor_register_handler_static(&small_actor, &LargeCmd, on_msg_a_shim);
+
+    LargeCmd_payload_t payload = {};
+    EXPECT_EQ(ipc_send_after_raw(&LargeCmd, 10, &payload), -EMSGSIZE);
+    EXPECT_FALSE(mock_port_has_pending_send_after(&small_actor));
+}
+
+TEST_F(SendTest, PublishReportsOversizedSubscriberAndContinuesFanout)
+{
+    struct ipc_actor small_sub     = {};
+    struct ipc_actor large_sub     = {};
+    small_sub.name                 = "small_sub";
+    large_sub.name                 = "large_sub";
+    small_sub.cfg.max_payload_size = IPC_MESSAGE_MAX(SmallCmd);
+    large_sub.cfg.max_payload_size = IPC_MESSAGE_MAX(LargeCmd);
+
+    _ipc_actor_register_handler_static(&small_sub, &StaticHandledEvt, on_static_handled_evt_shim);
+    _ipc_actor_register_handler_static(&large_sub, &StaticHandledEvt, on_static_handled_evt_shim);
+
+    StaticHandledEvt_payload_t payload = {.value = 77};
+    EXPECT_EQ(ipc_publish_raw(&StaticHandledEvt, &payload), -EMSGSIZE);
+    EXPECT_EQ(mock_port_actor_state(&small_sub)->send_count, 0);
+    EXPECT_EQ(mock_port_actor_state(&large_sub)->send_count, 1);
+    ASSERT_TRUE(mock_port_has_last_send_msg(&large_sub));
+    EXPECT_EQ(mock_port_last_send_msg(&large_sub)->payload[0], 77);
+}
+
+TEST_F(SendTest, NullMaxPayloadFallsBackToCompatibilityDefault)
+{
+    struct ipc_actor default_actor = {};
+    default_actor.name             = "default_actor";
+    _ipc_actor_register_handler_static(&default_actor, &DefaultFallbackCmd, on_msg_a_shim);
+
+    DefaultFallbackCmd_payload_t payload = {.value = 9};
+    EXPECT_EQ(ipc_send_raw(&DefaultFallbackCmd, &payload), 0);
+    EXPECT_TRUE(mock_port_has_last_send_msg(&default_actor));
 }
 
 TEST_F(SendTest, SendCopiesPayloadAndKind)

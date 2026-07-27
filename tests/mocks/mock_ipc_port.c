@@ -149,6 +149,28 @@ uint32_t mock_port_pending_send_after_delay_ms(struct ipc_actor *a)
     return s->pending_send_after_delay_ms;
 }
 
+static size_t mock_actor_max_payload_size(const struct ipc_actor *a)
+{
+    return a->cfg.max_payload_size > 0 ? a->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+}
+
+static void mock_copy_msg(struct ipc_msg *dst, uint8_t *dst_payload, size_t dst_capacity,
+                          const struct ipc_msg *src)
+{
+    *dst         = *src;
+    dst->payload = dst_payload;
+    if (src->size > dst_capacity) {
+        dst->size = dst_capacity;
+    }
+    if (dst->size > 0) {
+        if (src->payload) {
+            memcpy(dst_payload, src->payload, dst->size);
+        } else {
+            memset(dst_payload, 0, dst->size);
+        }
+    }
+}
+
 /* ── ipc_port_* seam implementations ────────────────────────────────────── */
 
 /* ── Per-actor lifecycle ────────────────────────────────────────────────── */
@@ -200,8 +222,12 @@ int ipc_port_restart_actor(struct ipc_actor *a)
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 {
     mock_actor_state_t *s = mock_port_actor_state(a);
+    if (msg->size > mock_actor_max_payload_size(a)) {
+        return -EMSGSIZE;
+    }
+
     s->send_count++;
-    s->last_send_msg     = *msg;
+    mock_copy_msg(&s->last_send_msg, s->last_send_payload, sizeof(s->last_send_payload), msg);
     s->has_last_send_msg = true;
 
     int rc               = 0;
@@ -212,7 +238,7 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     } else if (g_mock.send_should_fail) {
         rc = -ENOMEM;
     } else if (g_mock.invoke_handlers && a->handler) {
-        a->handler(a, msg);
+        a->handler(a, &s->last_send_msg);
     }
     return rc;
 }
@@ -226,14 +252,19 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
 {
     mock_actor_state_t *s = mock_port_actor_state(a);
     s->send_after_count++;
-    s->last_send_after_delay_ms    = delay_ms;
-    s->last_send_msg               = *msg;
-    s->has_last_send_msg           = true;
+    s->last_send_after_delay_ms = delay_ms;
+    if (msg->size > mock_actor_max_payload_size(a)) {
+        return -EMSGSIZE;
+    }
+
+    mock_copy_msg(&s->last_send_msg, s->last_send_payload, sizeof(s->last_send_payload), msg);
+    s->has_last_send_msg = true;
     /* Single-slot replacement: the most recent send_after overwrites
      * the previous pending one. This mirrors the contract documented in
      * AGENTS.md ("One delayed message per actor. ipc_send_after replaces
      * the previous pending delayed msg"). */
-    s->pending_send_after_msg      = *msg;
+    mock_copy_msg(&s->pending_send_after_msg, s->pending_send_after_payload,
+                  sizeof(s->pending_send_after_payload), msg);
     s->pending_send_after_delay_ms = delay_ms;
     s->has_pending_send_after      = true;
     if (g_mock.next_send_after_rc) {

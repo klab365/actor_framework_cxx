@@ -16,18 +16,21 @@ struct ipc_actor;
  * stack_size/priority/queue_depth. Preprocessor substitution is purely
  * textual, so a parameter named `stack_size` would also rewrite the
  * designated initializer `.stack_size`. */
-#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth)                   \
+#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)      \
     _Static_assert((stack_sz) > 0, #actor_sym ": stack_size must be positive");           \
     _Static_assert((qdepth) > 0, #actor_sym ": queue_depth must be positive");            \
+    _Static_assert((max_payload) >= 0, #actor_sym ": max_payload must be non-negative");  \
+    enum { actor_sym##_max_payload_size = (max_payload) };                                \
     static struct ipc_port_state actor_sym##_port_state;                                  \
     static struct ipc_actor actor_sym = {                                                 \
         .name    = (actor_name),                                                          \
         .handler = ipc_dispatch_actor_handlers,                                           \
         .cfg =                                                                            \
             {                                                                             \
-                .stack_size  = (stack_sz),                                                \
-                .priority    = (prio),                                                    \
-                .queue_depth = (qdepth),                                                  \
+                .stack_size       = (stack_sz),                                           \
+                .priority         = (prio),                                               \
+                .queue_depth      = (qdepth),                                             \
+                .max_payload_size = (max_payload),                                        \
             },                                                                            \
         .port  = &(actor_sym##_port_state),                                               \
         ._next = NULL,                                                                    \
@@ -38,18 +41,12 @@ struct ipc_actor;
     }
 
 #define IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn)                                       \
-    static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,             \
-                           const struct ipc_msg *raw_msg);                                     \
-    static void actor_sym##_##handler_fn##_ipc_trampoline(                                     \
-        struct ipc_actor *self, const void *payload, const struct ipc_msg *raw_msg)            \
-    {                                                                                          \
-        handler_fn(self, (const MsgType##_payload_t *) payload, raw_msg);                      \
-    }                                                                                          \
+    _IPC_ACTOR_HANDLE_ADAPTER(actor_sym, MsgType, handler_fn)                                  \
     static __attribute__((constructor(102))) void actor_sym##_##handler_fn##_register_handler( \
         void)                                                                                  \
     {                                                                                          \
         _ipc_actor_register_handler_static(&(actor_sym), &(MsgType),                           \
-                                           actor_sym##_##handler_fn##_ipc_trampoline);         \
+                                           actor_sym##_##handler_fn##_ipc_adapter);            \
     }                                                                                          \
     static void handler_fn(struct ipc_actor *self, const MsgType##_payload_t *msg,             \
                            const struct ipc_msg *raw_msg)

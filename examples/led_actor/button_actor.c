@@ -98,7 +98,7 @@ static void on_tick(struct ipc_actor *self)
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 16);
+IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 16, IPC_MESSAGE_MAX(ButtonTick, LedFault));
 
 IPC_START_HOOK(button_actor, button_on_start)
 {

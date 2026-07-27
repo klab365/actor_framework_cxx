@@ -7,7 +7,9 @@
 
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
-IPC_ACTOR_DEFINE(app_actor, "app", 1024, 4, 32);
+IPC_ACTOR_DEFINE(app_actor, "app", 1024, 4, 32,
+                 IPC_MESSAGE_MAX(LedFault, GetLedStateResponse, ButtonClick, ButtonDoubleClick,
+                                 ButtonHold));
 
 IPC_START_HOOK(app_actor, app_on_start)
 {

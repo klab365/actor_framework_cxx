@@ -23,6 +23,11 @@ static struct ipc_port_state *port_of(struct ipc_actor *a)
     return (struct ipc_port_state *) a->port;
 }
 
+static size_t actor_max_payload_size(const struct ipc_actor *a)
+{
+    return a->cfg.max_payload_size > 0 ? a->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+}
+
 /* ── Per-actor static resources ────────────────────────────────────────────
  *
  * IPC_ACTOR_DEFINE emits one stack and one msgq buffer per actor,
@@ -38,26 +43,38 @@ struct zephyr_static_actor_resources {
     size_t stack_size;
     char *msgq_buf;
     size_t queue_depth;
+    size_t slot_size;
+    char *delayed_payload;
+    char *send_slot;
+    char *recv_slot;
 };
 
 static struct zephyr_static_actor_resources static_actor_resources[ZEPHYR_STATIC_ACTOR_CAPACITY];
 static int static_actor_resource_count;
 
 int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stack,
-                                             size_t stack_size, char *msgq_buf, size_t queue_depth)
+                                             size_t stack_size, char *msgq_buf, size_t queue_depth,
+                                             size_t slot_size, char *delayed_payload,
+                                             char *send_slot, char *recv_slot)
 {
-    if (actor == NULL || stack == NULL || msgq_buf == NULL || stack_size == 0 || queue_depth == 0) {
+    if (actor == NULL || stack == NULL || msgq_buf == NULL || stack_size == 0 || queue_depth == 0 ||
+        slot_size < IPC_MSG_SLOT_HEADER_SIZE || delayed_payload == NULL || send_slot == NULL ||
+        recv_slot == NULL) {
         return -EINVAL;
     }
 
     for (int i = 0; i < static_actor_resource_count; i++) {
         if (static_actor_resources[i].actor == actor) {
             static_actor_resources[i] = (struct zephyr_static_actor_resources) {
-                .actor       = actor,
-                .stack       = stack,
-                .stack_size  = stack_size,
-                .msgq_buf    = msgq_buf,
-                .queue_depth = queue_depth,
+                .actor           = actor,
+                .stack           = stack,
+                .stack_size      = stack_size,
+                .msgq_buf        = msgq_buf,
+                .queue_depth     = queue_depth,
+                .slot_size       = slot_size,
+                .delayed_payload = delayed_payload,
+                .send_slot       = send_slot,
+                .recv_slot       = recv_slot,
             };
             return 0;
         }
@@ -68,11 +85,15 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
     }
 
     static_actor_resources[static_actor_resource_count++] = (struct zephyr_static_actor_resources) {
-        .actor       = actor,
-        .stack       = stack,
-        .stack_size  = stack_size,
-        .msgq_buf    = msgq_buf,
-        .queue_depth = queue_depth,
+        .actor           = actor,
+        .stack           = stack,
+        .stack_size      = stack_size,
+        .msgq_buf        = msgq_buf,
+        .queue_depth     = queue_depth,
+        .slot_size       = slot_size,
+        .delayed_payload = delayed_payload,
+        .send_slot       = send_slot,
+        .recv_slot       = recv_slot,
     };
     return 0;
 }
@@ -85,6 +106,42 @@ static struct zephyr_static_actor_resources *static_resources_for(struct ipc_act
         }
     }
     return NULL;
+}
+
+/* ── Queue slot helpers ─────────────────────────────────────────────────── */
+
+static int store_msg(const struct ipc_port_state *p, char *slot, const struct ipc_msg *msg)
+{
+    if (msg->size > p->slot_size - IPC_MSG_SLOT_HEADER_SIZE) {
+        return -EMSGSIZE;
+    }
+
+    ipc_msg_slot_header_t *header = (ipc_msg_slot_header_t *) slot;
+    header->id                    = msg->id;
+    header->kind                  = msg->kind;
+    header->size                  = msg->size;
+
+    char *payload                 = slot + IPC_MSG_SLOT_HEADER_SIZE;
+    if (msg->size > 0) {
+        if (msg->payload) {
+            memcpy(payload, msg->payload, msg->size);
+        } else {
+            memset(payload, 0, msg->size);
+        }
+    }
+    return 0;
+}
+
+static struct ipc_msg load_msg(const char *slot)
+{
+    const ipc_msg_slot_header_t *header = (const ipc_msg_slot_header_t *) slot;
+    struct ipc_msg msg                  = {
+        .id      = header->id,
+        .kind    = header->kind,
+        .size    = header->size,
+        .payload = (const uint8_t *) (slot + IPC_MSG_SLOT_HEADER_SIZE),
+    };
+    return msg;
 }
 
 /* ── Actor thread ────────────────────────────────────────────────────────── */
@@ -105,10 +162,11 @@ static void ipc_thread_fn(void *p1, void *p2, void *p3)
 
         if (events[0].state == K_POLL_STATE_SIGNALED) {
             k_poll_signal_reset(&port_of(self)->signal);
-            events[0].state = K_POLL_STATE_NOT_READY;
+            events[0].state          = K_POLL_STATE_NOT_READY;
 
-            struct ipc_msg msg;
-            while (k_msgq_get(&port_of(self)->msgq, &msg, K_NO_WAIT) == 0) {
+            struct ipc_port_state *p = port_of(self);
+            while (k_msgq_get(&p->msgq, p->recv_slot, K_NO_WAIT) == 0) {
+                struct ipc_msg msg = load_msg(p->recv_slot);
                 self->handler(self, &msg);
             }
         }
@@ -123,7 +181,9 @@ static void delayed_work_fn(struct k_work *work)
     struct ipc_port_state *p       = CONTAINER_OF(dwork, struct ipc_port_state, delayed_work);
     struct ipc_actor *a            = p->owner;
 
-    ipc_port_send(a, &p->delayed_msg);
+    struct ipc_msg msg             = p->delayed_msg;
+    msg.payload                    = (const uint8_t *) p->delayed_payload;
+    ipc_port_send(a, &msg);
 }
 
 /* ── Port API ────────────────────────────────────────────────────────────── */
@@ -147,13 +207,17 @@ int ipc_port_actor_init(struct ipc_actor *a)
     if (stack_size != static_res->stack_size || queue_depth != static_res->queue_depth) {
         return -EINVAL;
     }
-    p->stack       = (k_thread_stack_t *) static_res->stack;
-    char *msgq_buf = static_res->msgq_buf;
+    p->stack           = (k_thread_stack_t *) static_res->stack;
+    p->slot_size       = static_res->slot_size;
+    p->delayed_payload = static_res->delayed_payload;
+    p->send_slot       = static_res->send_slot;
+    p->recv_slot       = static_res->recv_slot;
+    char *msgq_buf     = static_res->msgq_buf;
 
     /* The actor is fully initialised and its thread is now live.
      * ipc_start_all_actors() calls into this port hook after the
      * application has registered/subscribed routes. */
-    k_msgq_init(&p->msgq, msgq_buf, sizeof(struct ipc_msg), queue_depth);
+    k_msgq_init(&p->msgq, msgq_buf, p->slot_size, queue_depth);
     k_poll_signal_init(&p->signal);
     p->owner = a;
     k_work_init_delayable(&p->delayed_work, delayed_work_fn);
@@ -176,7 +240,17 @@ int ipc_port_start(struct ipc_actor *a)
 int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 {
     struct ipc_port_state *p = port_of(a);
-    int rc                   = k_msgq_put(&p->msgq, msg, K_NO_WAIT);
+    if (msg->size > actor_max_payload_size(a)) {
+        return -EMSGSIZE;
+    }
+
+    k_spinlock_key_t key = k_spin_lock(&p->send_lock);
+    int rc               = store_msg(p, p->send_slot, msg);
+    if (rc == 0) {
+        rc = k_msgq_put(&p->msgq, p->send_slot, K_NO_WAIT);
+    }
+    k_spin_unlock(&p->send_lock, key);
+
     if (rc == 0) {
         k_poll_signal_raise(&p->signal, 0);
     }
@@ -191,7 +265,19 @@ int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
     struct ipc_port_state *p = port_of(a);
-    p->delayed_msg           = *msg;
+    if (msg->size > actor_max_payload_size(a)) {
+        return -EMSGSIZE;
+    }
+
+    p->delayed_msg         = *msg;
+    p->delayed_msg.payload = (const uint8_t *) p->delayed_payload;
+    if (msg->size > 0) {
+        if (msg->payload) {
+            memcpy(p->delayed_payload, msg->payload, msg->size);
+        } else {
+            memset(p->delayed_payload, 0, msg->size);
+        }
+    }
     k_work_reschedule(&p->delayed_work, K_MSEC(delay_ms));
     return 0;
 }

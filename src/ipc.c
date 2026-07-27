@@ -134,6 +134,11 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
 
 /* ── Helper: find registration ───────────────────────────────────────────── */
 
+static size_t actor_max_payload_size(const struct ipc_actor *actor)
+{
+    return actor->cfg.max_payload_size > 0 ? actor->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+}
+
 static struct ipc_actor *find_registered(uint32_t msg_id)
 {
     for (int i = 0; i < reg_count; i++) {
@@ -217,50 +222,52 @@ void _ipc_actor_register_failure_hook_static(struct ipc_actor *actor, ipc_actor_
     actor->failure_hook = hook;
 }
 
+static struct ipc_msg make_msg(const ipc_msg_desc_t *desc, const void *payload)
+{
+    struct ipc_msg msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.id      = desc->id;
+    msg.kind    = desc->kind;
+    msg.size    = desc->size;
+    msg.payload = (const uint8_t *) payload;
+    return msg;
+}
+
+static int prepare_registered_cmd(ipc_msg_desc_t *desc, const void *payload, const char *op,
+                                  struct ipc_actor **target, struct ipc_msg *msg)
+{
+    _ipc_ensure_id(desc);
+    *target = find_registered(desc->id);
+    if (!*target) {
+        fprintf(stderr, "ipc: %s '%s' — not registered\n", op, desc->name);
+        return -ENOENT;
+    }
+    if (desc->size > actor_max_payload_size(*target)) {
+        return -EMSGSIZE;
+    }
+
+    *msg = make_msg(desc, payload);
+    return 0;
+}
+
 /* ── ipc_send_raw ────────────────────────────────────────────────────────── */
 
 int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
 {
-    _ipc_ensure_id(desc);
-    struct ipc_actor *target = find_registered(desc->id);
-
-    if (!target) {
-        fprintf(stderr, "ipc: send '%s' — not registered\n", desc->name);
-        return -ENOENT;
-    }
-
+    struct ipc_actor *target;
     struct ipc_msg msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.id   = desc->id;
-    msg.kind = desc->kind;
-    if (payload && desc->size > 0) {
-        memcpy(msg.payload, payload, desc->size);
-    }
-
-    return ipc_port_send(target, &msg);
+    int rc = prepare_registered_cmd(desc, payload, "send", &target, &msg);
+    return rc ? rc : ipc_port_send(target, &msg);
 }
 
 /* ── ipc_send_after_raw ──────────────────────────────────────────────────── */
 
 int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payload)
 {
-    _ipc_ensure_id(desc);
-    struct ipc_actor *target = find_registered(desc->id);
-
-    if (!target) {
-        fprintf(stderr, "ipc: send_after '%s' — not registered\n", desc->name);
-        return -ENOENT;
-    }
-
+    struct ipc_actor *target;
     struct ipc_msg msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.id   = desc->id;
-    msg.kind = desc->kind;
-    if (payload && desc->size > 0) {
-        memcpy(msg.payload, payload, desc->size);
-    }
-
-    return ipc_port_send_after(target, &msg, delay_ms);
+    int rc = prepare_registered_cmd(desc, payload, "send_after", &target, &msg);
+    return rc ? rc : ipc_port_send_after(target, &msg, delay_ms);
 }
 
 static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
@@ -269,7 +276,8 @@ static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
     int first_rc = 0;
     for (int i = 0; i < sub_count; i++) {
         if (sub_table[i].msg_id == msg_id) {
-            int rc = send_fn(sub_table[i].actor, msg);
+            struct ipc_actor *actor = sub_table[i].actor;
+            int rc = msg->size > actor_max_payload_size(actor) ? -EMSGSIZE : send_fn(actor, msg);
             if (rc && !first_rc) {
                 first_rc = rc;
             }
@@ -292,11 +300,10 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
 
     struct ipc_msg msg;
     memset(&msg, 0, sizeof(msg));
-    msg.id   = desc->id;
-    msg.kind = IPC_EVENT;
-    if (payload && desc->size > 0) {
-        memcpy(msg.payload, payload, desc->size);
-    }
+    msg.id      = desc->id;
+    msg.kind    = IPC_EVENT;
+    msg.size    = desc->size;
+    msg.payload = (const uint8_t *) payload;
 
     return publish_prepared_msg(&msg, desc->id, ipc_port_send);
 }
@@ -317,11 +324,10 @@ int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
 
     struct ipc_msg msg;
     memset(&msg, 0, sizeof(msg));
-    msg.id   = desc->id;
-    msg.kind = IPC_EVENT;
-    if (payload && desc->size > 0) {
-        memcpy(msg.payload, payload, desc->size);
-    }
+    msg.id      = desc->id;
+    msg.kind    = IPC_EVENT;
+    msg.size    = desc->size;
+    msg.payload = (const uint8_t *) payload;
 
     return publish_prepared_msg(&msg, desc->id, ipc_port_send_isr);
 }
