@@ -57,7 +57,7 @@ static int store_msg(const struct ipc_port_state *p, uint8_t *slot, const struct
     return 0;
 }
 
-static struct ipc_msg load_msg(uint8_t *slot)
+static struct ipc_msg load_msg(const uint8_t *slot)
 {
     const ipc_msg_slot_header_t *header = (const ipc_msg_slot_header_t *) slot;
     struct ipc_msg msg                  = {

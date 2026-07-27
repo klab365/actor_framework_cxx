@@ -132,7 +132,7 @@ static int store_msg(const struct ipc_port_state *p, char *slot, const struct ip
     return 0;
 }
 
-static struct ipc_msg load_msg(char *slot)
+static struct ipc_msg load_msg(const char *slot)
 {
     const ipc_msg_slot_header_t *header = (const ipc_msg_slot_header_t *) slot;
     struct ipc_msg msg                  = {
