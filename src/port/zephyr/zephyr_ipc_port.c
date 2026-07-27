@@ -110,7 +110,7 @@ static struct zephyr_static_actor_resources *static_resources_for(struct ipc_act
 
 /* ── Queue slot helpers ─────────────────────────────────────────────────── */
 
-static int store_msg(struct ipc_port_state *p, char *slot, const struct ipc_msg *msg)
+static int store_msg(const struct ipc_port_state *p, char *slot, const struct ipc_msg *msg)
 {
     if (msg->size > p->slot_size - IPC_MSG_SLOT_HEADER_SIZE) {
         return -EMSGSIZE;
@@ -134,8 +134,8 @@ static int store_msg(struct ipc_port_state *p, char *slot, const struct ipc_msg 
 
 static struct ipc_msg load_msg(char *slot)
 {
-    ipc_msg_slot_header_t *header = (ipc_msg_slot_header_t *) slot;
-    struct ipc_msg msg            = {
+    const ipc_msg_slot_header_t *header = (const ipc_msg_slot_header_t *) slot;
+    struct ipc_msg msg                  = {
         .id      = header->id,
         .kind    = header->kind,
         .size    = header->size,

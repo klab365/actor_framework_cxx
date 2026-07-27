@@ -35,7 +35,7 @@ static uint8_t *slot_at(struct ipc_port_state *p, size_t index)
     return p->ring + (index * p->slot_size);
 }
 
-static int store_msg(struct ipc_port_state *p, uint8_t *slot, const struct ipc_msg *msg)
+static int store_msg(const struct ipc_port_state *p, uint8_t *slot, const struct ipc_msg *msg)
 {
     if (msg->size > p->slot_size - IPC_MSG_SLOT_HEADER_SIZE) {
         return -EMSGSIZE;
@@ -59,8 +59,8 @@ static int store_msg(struct ipc_port_state *p, uint8_t *slot, const struct ipc_m
 
 static struct ipc_msg load_msg(uint8_t *slot)
 {
-    ipc_msg_slot_header_t *header = (ipc_msg_slot_header_t *) slot;
-    struct ipc_msg msg            = {
+    const ipc_msg_slot_header_t *header = (const ipc_msg_slot_header_t *) slot;
+    struct ipc_msg msg                  = {
         .id      = header->id,
         .kind    = header->kind,
         .size    = header->size,
