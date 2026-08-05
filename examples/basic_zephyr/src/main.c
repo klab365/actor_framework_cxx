@@ -8,9 +8,9 @@
 
 IPC_CMD_DEFINE(BasicPing, { uint32_t count; });
 IPC_CMD_DEFINE(BasicPong, { uint32_t count; });
-IPC_CMD_DEFINE(BasicStatusRequest, { uint32_t request_id; });
 IPC_CMD_DEFINE(BasicFault, { uint32_t code; });
-IPC_CMD_DEFINE(BasicStatusResponse, {
+IPC_CMD_DEFINE(BasicStatusRequest, { uint32_t request_id; });
+IPC_CMD_REPLY_DEFINE(BasicStatusRequest, BasicStatusResponse, {
     uint32_t request_id;
     uint32_t ping_count;
     uint32_t pong_count;
@@ -115,7 +115,6 @@ IPC_ACTOR_HANDLE(ping_actor, BasicPong, on_basic_pong)
 IPC_ACTOR_HANDLE(pong_actor, BasicStatusRequest, on_basic_status_request)
 {
     (void) self;
-    (void) raw_msg;
 
     BasicStatusResponse_payload_t response = {
         .request_id = msg->request_id,
@@ -124,7 +123,10 @@ IPC_ACTOR_HANDLE(pong_actor, BasicStatusRequest, on_basic_status_request)
     };
     printk("ipc basic: status request %u -> ping=%u pong=%u\n", response.request_id,
            response.ping_count, response.pong_count);
-    ipc_send(BasicStatusResponse, response);
+    int rc = ipc_reply(raw_msg, BasicStatusResponse, response);
+    if (rc != 0) {
+        printk("ipc basic: status reply failed: %d\n", rc);
+    }
 }
 
 IPC_ACTOR_HANDLE(pong_actor, BasicFault, on_basic_fault)
@@ -138,10 +140,15 @@ IPC_ACTOR_HANDLE(pong_actor, BasicFault, on_basic_fault)
     }
 }
 
-IPC_ACTOR_HANDLE(ping_actor, BasicStatusResponse, on_basic_status_response)
+IPC_ACTOR_RESPONSE_HANDLE(ping_actor, BasicStatusRequest, BasicStatusResponse,
+                          on_basic_status_response)
 {
     (void) self;
     (void) raw_msg;
+    if (result != 0) {
+        printk("ipc basic: status ask failed: %d\n", result);
+        return;
+    }
 
     printk("ipc basic: status response request=%u ping=%u pong=%u\n", msg->request_id,
            msg->ping_count, msg->pong_count);
@@ -178,9 +185,9 @@ int main(void)
     k_sleep(K_SECONDS(6));
 
     BasicStatusRequest_payload_t request = {.request_id = 1U};
-    int rc                               = ipc_send(BasicStatusRequest, request);
+    int rc = ipc_ask_with(&ping_actor, BasicStatusRequest, request, on_basic_status_response);
     if (rc != 0) {
-        printk("ipc basic: status request failed: %d\n", rc);
+        printk("ipc basic: status ask failed: %d\n", rc);
     }
     k_sleep(K_MSEC(100));
 

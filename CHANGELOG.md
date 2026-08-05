@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.1.0 (2026-08-05)
+
+### Added
+
+- Added asynchronous ask/reply messaging with typed reply descriptors, correlation IDs, response handlers, reply helpers, and cancellation support.
+- Added ask/reply coverage to POSIX and Zephyr message storage paths, examples, README documentation, and unit tests.
+
 ## 1.0.0 (2026-07-27)
 
 ### Added

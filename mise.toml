@@ -1,6 +1,7 @@
 [env]
 ZEPHYR_SDK_TOOLCHAINS = "x86_64-zephyr-elf"
-
+ZEPHYR_SDK_SKIP_HOSTTOOLS = "1"
+  
 [plugins]
 zephyr-sdk = "https://github.com/klab365/mise-zephyr-sdk.git"
 
@@ -148,15 +149,22 @@ grep -q '^zephyr-basic OK$' "$LOG"
 [tasks.format]
 description = "Format C/C++ sources in place with clang-format"
 run = '''
-git ls-files -z -- 'src/*.c' 'src/*.h' 'include/*.h' 'src/port/**/*.[ch]' 'tests/**/*.cpp' 'tests/**/*.c' 'tests/**/*.h' 'examples/**/*.c' 'examples/**/*.h' |
-  xargs -0 mise exec -- clang-format --style=file -i
+#!/bin/bash
+set -euo pipefail
+
+/usr/bin/git ls-files -z -- 'src/*.c' 'src/*.h' 'include/*.h' 'src/port/**/*.[ch]' 'tests/**/*.cpp' 'tests/**/*.c' 'tests/**/*.h' 'examples/**/*.c' 'examples/**/*.h' |
+  /usr/bin/xargs -0 clang-format --style=file -i
 '''
 
 [tasks.check-format]
 description = "Check that tracked C/C++ sources are clang-formatted (non-destructive)"
 run = '''
-git ls-files -z -- 'src/*.c' 'src/*.h' 'include/*.h' 'src/port/**/*.[ch]' 'tests/**/*.cpp' 'tests/**/*.c' 'tests/**/*.h' 'examples/**/*.c' 'examples/**/*.h' |
-  xargs -0 mise exec -- clang-format --style=file --dry-run --Werror
+#!/bin/bash
+set -euo pipefail
+
+clang-format --version
+/usr/bin/git ls-files -z -- 'src/*.c' 'src/*.h' 'include/*.h' 'src/port/**/*.[ch]' 'tests/**/*.cpp' 'tests/**/*.c' 'tests/**/*.h' 'examples/**/*.c' 'examples/**/*.h' |
+  /usr/bin/xargs -0 clang-format --style=file --dry-run --Werror
 '''
 
 # ── Misc ───────────────────────────────────────────────────────────────────

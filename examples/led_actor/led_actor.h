@@ -15,7 +15,7 @@ IPC_CMD_DEFINE(LedBlink, {
 });
 
 IPC_CMD_DEFINE(GetLedStateRequest, { uint8_t channel; });
-IPC_CMD_DEFINE(GetLedStateResponse, {
+IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
     uint8_t channel;
     uint8_t on;
     uint8_t brightness;

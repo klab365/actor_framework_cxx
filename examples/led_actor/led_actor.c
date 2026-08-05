@@ -111,14 +111,16 @@ IPC_ACTOR_HANDLE(led_actor, LedBlink, led_blink_handler)
 IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, get_led_state_handler)
 {
     (void) self;
-    (void) raw_msg;
     GetLedStateResponse_payload_t resp = {
         .channel    = msg->channel,
         .on         = g_disabled ? 0 : 1,
         .brightness = 80,
         .on_time_ms = 12345,
     };
-    ipc_send(GetLedStateResponse, resp);
+    int rc = ipc_reply(raw_msg, GetLedStateResponse, resp);
+    if (rc != 0) {
+        printf("[led] GetLedStateResponse reply failed: %d\n", rc);
+    }
 }
 
 IPC_ACTOR_HANDLE(led_actor, LedFault, led_fault_handler)

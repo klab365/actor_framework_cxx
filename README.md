@@ -1,10 +1,11 @@
 # IPC Actor Framework
 
 A small **actor-model IPC framework** written in **C11** (with a **C++17**
-test suite). Each actor owns its own thread and message inbox; messages
-are typed and bound to actors with `IPC_ACTOR_HANDLE`. The core is
-platform-agnostic — POSIX (pthreads) and Zephyr (`k_msgq` / `k_thread`)
-live behind a single port seam.
+test suite). Each actor owns its own thread and message inbox. Actors register
+typed handlers with `IPC_ACTOR_HANDLE`; commands are routed by message ID, so
+callers do not need direct actor references. The core is platform-agnostic —
+POSIX (pthreads) and Zephyr (`k_msgq` / `k_thread`) live behind a single port
+seam.
 
 - One public header: `<ipc.h>`.
 - No `extern struct ipc_actor` anywhere. Cross-actor sends use typed
@@ -62,11 +63,12 @@ FNV-1a-hashed `.id`, set on first register/send) and a
 checks that `sizeof(LedOn_payload_t) <= IPC_PAYLOAD_SIZE` at compile
 time.
 
-The same pattern works for events. Request/response is modeled as two commands:
+The same pattern works for events. Async request/response is modeled as an askable
+command plus an associated command reply:
 
 ```c
 IPC_CMD_DEFINE(GetLedStateRequest, { uint8_t channel; });
-IPC_CMD_DEFINE(GetLedStateResponse, {
+IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
     uint8_t channel;
     uint8_t on;
     uint8_t brightness;
@@ -76,10 +78,13 @@ IPC_CMD_DEFINE(GetLedStateResponse, {
 IPC_EVENT_DEFINE(LedFault, { uint32_t error_code; uint8_t channel; });
 ```
 
+`IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)` defines the reply command
+payload and associates it with the request type for `ipc_ask()` / `ipc_reply()`.
+
 ### 2. Define an actor and its typed handlers
 
 ```c
-IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8);
+IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8, IPC_MESSAGE_MAX(LedOn));
 
 IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on)
 {
@@ -94,7 +99,7 @@ IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on)
 function plus static routing metadata. CMD handlers become single-target
 routes; EVENT handlers become fan-out subscriptions automatically.
 
-### 5. Optional actor hooks and supervision
+### 3. Optional actor hooks and supervision
 
 Actors may define lifecycle, unknown-message, and failure hooks:
 
@@ -126,32 +131,70 @@ performs a soft restart for message-driven actors: pending delayed work and
 queued messages are dropped, then stop/start hooks are run so actor state can
 be reset.
 
-### 6. Send messages (no `extern` needed)
+### 4. Send messages (no `extern` needed)
+
+#### Command: tell one actor to do something
+
+Commands are routed to exactly one actor: the actor that registered a handler
+for that command type.
 
 ```c
-/* CMD — fire and forget */
 ipc_send(LedOn, (LedOn_payload_t){.brightness = 200});
-
-/* EVENT — broadcast to all subscribers */
-ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
-
-/* Async request/response — two commands */
-ipc_send(GetLedStateRequest, (GetLedStateRequest_payload_t){.channel = 0});
-
-IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
-    (void)self; (void)raw_msg;
-    ipc_send(GetLedStateResponse,
-             (GetLedStateResponse_payload_t){.channel = msg->channel,
-                                             .on = 1,
-                                             .brightness = 80,
-                                             .on_time_ms = 12345});
-}
-
-/* Delayed — re-arms self (replaces any previous pending delayed msg) */
-ipc_send_after(LedBlink, 500, (LedBlink_payload_t){.period_ms = 500, .brightness = 200});
 ```
 
-### 7. Run the framework
+#### Event: announce something to all subscribers
+
+Events are published to every actor that registered a handler for that event
+type. Publishing succeeds even when there are no subscribers.
+
+```c
+ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
+```
+
+#### Ask/reply: ask one actor for a typed async response
+
+Ask/reply sends a command request to one actor and correlates the reply back to
+the asking actor. The response callback runs in the asking actor's context.
+
+```c
+IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
+    (void)self;
+    ipc_reply(raw_msg, GetLedStateResponse,
+              (GetLedStateResponse_payload_t){.channel = msg->channel,
+                                              .on = 1,
+                                              .brightness = 80,
+                                              .on_time_ms = 12345});
+}
+
+IPC_ACTOR_RESPONSE_HANDLE(app_actor, GetLedStateRequest, GetLedStateResponse, on_led_state) {
+    (void)self; (void)raw_msg;
+    if (result == 0) {
+        printf("LED ch=%u on=%u brightness=%u\n", msg->channel, msg->on, msg->brightness);
+    }
+}
+
+GetLedStateRequest_payload_t req = {.channel = 0};
+ipc_ask_with(&app_actor, GetLedStateRequest, req, on_led_state);
+```
+
+If you need cancellation, keep the correlation ID returned by the `_id` variant:
+
+```c
+uint32_t ask_id;
+ipc_ask_with_id(&app_actor, GetLedStateRequest, req, on_led_state, &ask_id);
+ipc_ask_cancel(&app_actor, ask_id);
+```
+
+#### Delayed command: send a command later
+
+Delayed sends target the same single registered command receiver. Each actor has
+one pending delayed slot; a newer `ipc_send_after()` replaces the previous one.
+
+```c
+ipc_send_after(LedOn, 500, (LedOn_payload_t){.brightness = 200});
+```
+
+### 5. Run the framework
 
 POSIX (host / Linux / macOS):
 
@@ -210,7 +253,7 @@ build, not at runtime.
 
 ## Building
 
-This repo uses [`mise`](https://mise.jst.jr) for toolchain pinning.
+This repo uses [`mise`](https://mise.jdx.dev) for toolchain pinning.
 With `mise trust` accepted once, the available tasks are:
 
 ```bash
@@ -239,6 +282,8 @@ Build options (see top-level `CMakeLists.txt`):
 | `IPC_PLATFORM`         | posix   | `posix` (host) or `zephyr` (set by Zephyr's build)  |
 
 ### Zephyr
+
+Skip this section if you only use POSIX/host builds.
 
 Inside a Zephyr app, drop this repo in as the `ipc` module (or use
 `CMakeLists.txt`-level integration) and add to `prj.conf`:

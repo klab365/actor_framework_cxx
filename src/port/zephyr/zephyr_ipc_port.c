@@ -120,6 +120,8 @@ static int store_msg(const struct ipc_port_state *p, char *slot, const struct ip
     header->id                    = msg->id;
     header->kind                  = msg->kind;
     header->size                  = msg->size;
+    header->ask_id                = msg->ask_id;
+    header->reply_id              = msg->reply_id;
 
     char *payload                 = slot + IPC_MSG_SLOT_HEADER_SIZE;
     if (msg->size > 0) {
@@ -136,10 +138,12 @@ static struct ipc_msg load_msg(const char *slot)
 {
     const ipc_msg_slot_header_t *header = (const ipc_msg_slot_header_t *) slot;
     struct ipc_msg msg                  = {
-        .id      = header->id,
-        .kind    = header->kind,
-        .size    = header->size,
-        .payload = (const uint8_t *) (slot + IPC_MSG_SLOT_HEADER_SIZE),
+        .id       = header->id,
+        .kind     = header->kind,
+        .size     = header->size,
+        .payload  = (const uint8_t *) (slot + IPC_MSG_SLOT_HEADER_SIZE),
+        .ask_id   = header->ask_id,
+        .reply_id = header->reply_id,
     };
     return msg;
 }
