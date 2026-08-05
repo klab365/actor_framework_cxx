@@ -52,6 +52,8 @@ typedef struct {
     uint32_t id;
     ipc_msg_kind_t kind;
     size_t size;
+    uint32_t ask_id;
+    uint32_t reply_id;
 } ipc_msg_slot_header_t;
 
 #define IPC_MSG_SLOT_HEADER_SIZE \
@@ -127,6 +129,12 @@ struct ipc_msg {
 
     /** Payload bytes valid for the duration of the handler/port call. */
     const uint8_t *payload;
+
+    /** Internal ask correlation ID, or 0 for normal sends. */
+    uint32_t ask_id;
+
+    /** Expected reply message ID for ask requests, or 0 for normal sends. */
+    uint32_t reply_id;
 };
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
@@ -195,6 +203,10 @@ typedef void (*ipc_actor_failure_hook_t)(struct ipc_actor *self, int reason);
  */
 typedef void (*ipc_actor_msg_handler_t)(struct ipc_actor *self, const void *payload,
                                         const struct ipc_msg *raw_msg);
+
+/** @brief Callback invoked in the asking actor context when an ask reply arrives. */
+typedef void (*ipc_ask_callback_t)(struct ipc_actor *self, int result, const void *reply_payload,
+                                   size_t reply_size, const struct ipc_msg *raw_msg);
 
 /* ── Actor struct ─────────────────────────────────────────────────────────── */
 
@@ -267,6 +279,9 @@ struct ipc_actor {
  *
  * @def IPC_FAIL_HOOK(actor_sym, hook_fn)
  * @brief Define a hook called when @p actor_sym reports failure.
+ *
+ * @def IPC_ACTOR_RESPONSE_HANDLE(actor_sym, RequestType, ReplyType, handler_fn)
+ * @brief Define a typed callback for an ipc_ask() reply.
  */
 #include <ipc_actor_define.h>
 
@@ -309,6 +324,14 @@ struct ipc_actor {
         .size = sizeof(TypeName##_payload_t),                  \
         .name = #TypeName,                                     \
     }
+
+/**
+ * @def IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)
+ * @brief Define the reply payload type associated with an askable command.
+ */
+#define IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, ...) \
+    IPC_CMD_DEFINE(ReplyType, __VA_ARGS__);               \
+    static ipc_msg_desc_t *RequestType##_reply_desc __attribute__((unused)) = &(ReplyType)
 
 /* ── Handler dispatch ───────────────────────────────────────────────────── */
 
@@ -375,6 +398,44 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
  */
 #define ipc_publish_isr(MsgType, payload) IPC_ISR_PUBLISH(MsgType, payload)
 
+/**
+ * @def ipc_ask(self, ReqType, callback)
+ * @brief Asynchronously send an empty ask request and invoke @p callback on reply.
+ */
+#define ipc_ask(self, ReqType, callback) \
+    ipc_ask_raw((self), &(ReqType), NULL, ReqType##_reply_desc, (ipc_ask_callback_t) (callback))
+
+/**
+ * @def ipc_ask_with(self, ReqType, payload, callback)
+ * @brief Asynchronously send an ask request payload and invoke @p callback on reply.
+ */
+#define ipc_ask_with(self, ReqType, payload, callback)                \
+    ipc_ask_raw((self), &(ReqType), &(payload), ReqType##_reply_desc, \
+                (ipc_ask_callback_t) (callback))
+
+/**
+ * @def ipc_ask_id(self, ReqType, callback, ask_id_out)
+ * @brief Asynchronously send an empty ask request and return its correlation ID.
+ */
+#define ipc_ask_id(self, ReqType, callback, ask_id_out)                 \
+    ipc_ask_with_id_raw((self), &(ReqType), NULL, ReqType##_reply_desc, \
+                        (ipc_ask_callback_t) (callback), (ask_id_out))
+
+/**
+ * @def ipc_ask_with_id(self, ReqType, payload, callback, ask_id_out)
+ * @brief Asynchronously send an ask request payload and return its correlation ID.
+ */
+#define ipc_ask_with_id(self, ReqType, payload, callback, ask_id_out)         \
+    ipc_ask_with_id_raw((self), &(ReqType), &(payload), ReqType##_reply_desc, \
+                        (ipc_ask_callback_t) (callback), (ask_id_out))
+
+/**
+ * @def ipc_reply(request_msg, ReplyType, payload)
+ * @brief Reply to an ask request from inside the request handler.
+ */
+#define ipc_reply(request_msg, ReplyType, payload) \
+    ipc_reply_raw((request_msg), &(ReplyType), &(payload))
+
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 
 /**
@@ -426,6 +487,30 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
  *         startup, or a negative errno-style value from the active port.
  */
 int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload);
+
+/**
+ * @brief Asynchronously send a request and register a callback for its reply.
+ */
+int ipc_ask_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc, const void *request_payload,
+                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback);
+
+/**
+ * @brief Asynchronously send a request and return its correlation ID.
+ */
+int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
+                        const void *request_payload, ipc_msg_desc_t *reply_desc,
+                        ipc_ask_callback_t callback, uint32_t *ask_id_out);
+
+/**
+ * @brief Cancel a pending ask by correlation ID.
+ */
+int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id);
+
+/**
+ * @brief Send a reply to an ask request.
+ */
+int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
+                  const void *reply_payload);
 
 /* ── Actor lifecycle ────────────────────────────────────────────────────── */
 

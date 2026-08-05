@@ -27,6 +27,12 @@ jobs:
           mise_trust: "true"
           install: "true"
 
+      - name: Remove system clang-format
+        run: |
+          sudo apt-get remove -y clang-format clang-format-18 || true
+          which clang-format || true
+          mise exec clang-format -- clang-format --version
+
       - name: Check formatting
         run: mise run check-format
 

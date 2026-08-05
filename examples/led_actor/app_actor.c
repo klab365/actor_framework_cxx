@@ -38,10 +38,15 @@ IPC_ACTOR_HANDLE(app_actor, LedFault, led_fault_handler)
     (void) raw_msg;
 }
 
-IPC_ACTOR_HANDLE(app_actor, GetLedStateResponse, on_led_state)
+IPC_ACTOR_RESPONSE_HANDLE(app_actor, GetLedStateRequest, GetLedStateResponse, on_led_state)
 {
     (void) self;
     (void) raw_msg;
+    if (result != 0) {
+        printf("[app] GetLedState ask failed: %d\n", result);
+        return;
+    }
+
     printf("[app] GetLedStateResponse ch=%u on=%u brightness=%u on_time_ms=%u\n", msg->channel,
            msg->on, msg->brightness, msg->on_time_ms);
 }
@@ -80,12 +85,12 @@ int app_actor_module_init(void)
 
 void app_run(void)
 {
-    /* Async request/response: ask LED actor for state, then handle
-     * GetLedStateResponse when it arrives in app_handler(). */
+    /* Async ask/reply: ask LED actor for state, then invoke on_led_state
+     * when GetLedStateResponse arrives in app_actor's context. */
     GetLedStateRequest_payload_t req = {.channel = 0};
-    int rc                           = ipc_send(GetLedStateRequest, req);
+    int rc = ipc_ask_with(&app_actor, GetLedStateRequest, req, on_led_state);
     if (rc != 0) {
-        printf("[app] GetLedStateRequest failed: %d\n", rc);
+        printf("[app] GetLedState ask failed: %d\n", rc);
     }
 
     /* EVENT — broadcast, no target */

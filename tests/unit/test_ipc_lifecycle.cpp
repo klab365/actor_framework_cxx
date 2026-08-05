@@ -96,6 +96,25 @@ TEST_F(LifecycleTest, StopAllCallsStopOnEveryActor)
     EXPECT_EQ(mock_port_actor_state(&g_b)->stop_count, 1);
 }
 
+#ifndef NDEBUG
+TEST_F(LifecycleTest, ActorRegistrationAfterStartIsForbidden)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    ASSERT_DEATH(_ipc_actor_register_static(&g_b), "runtime registration is forbidden");
+}
+
+TEST_F(LifecycleTest, HandlerRegistrationAfterStartIsForbidden)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0});
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    ASSERT_DEATH(_ipc_actor_register_handler_static(&g_a, &LifecycleCmd, lifecycle_cmd_handler),
+                 "runtime registration is forbidden");
+}
+#endif
+
 TEST_F(LifecycleTest, ReRegisteringExistingActorForHandlerDoesNotCorruptActorList)
 {
     define_test_actor(&g_a, "a", {0, 0, 0});

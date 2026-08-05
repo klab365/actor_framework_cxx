@@ -50,6 +50,7 @@ static inline uint32_t _ipc_fnv1a(const char *s)
  * never call this.
  */
 void _ipc_reset_for_testing(void);
+void _ipc_set_next_ask_id_for_testing(uint32_t next_id);
 
 /* Registers a statically defined actor in the core actor list.
  * Called by IPC_ACTOR_DEFINE-generated startup hooks; tests may call

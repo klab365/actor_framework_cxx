@@ -11,6 +11,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -46,6 +47,7 @@ typedef struct {
 static ipc_subscription_t sub_table[IPC_CORE_MAX_SUBSCRIPTIONS];
 static int sub_count;
 static bool actors_started;
+static uint32_t next_ask_id = 1;
 
 typedef struct {
     struct ipc_actor *actor;
@@ -56,8 +58,39 @@ typedef struct {
 static ipc_handler_binding_t handler_table[IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS];
 static int handler_count;
 
+typedef struct {
+    bool used;
+    bool reply_sent;
+    uint32_t ask_id;
+    uint32_t reply_id;
+    struct ipc_actor *actor;
+    ipc_ask_callback_t callback;
+} ipc_pending_ask_t;
+
+static ipc_pending_ask_t ask_table[IPC_CORE_MAX_INFLIGHT_QUERIES];
+static atomic_flag ask_lock = ATOMIC_FLAG_INIT;
+
+static void lock_asks(void)
+{
+    while (atomic_flag_test_and_set_explicit(&ask_lock, memory_order_acquire)) {
+        /* Spin until the ask table lock is available. */
+    }
+}
+
+static void unlock_asks(void)
+{
+    atomic_flag_clear_explicit(&ask_lock, memory_order_release);
+}
+
 /* ── Test reset ─────────────────────────────────────────────────────────── */
 /* See declaration in ipc_internal.h. Production code must never call this. */
+void _ipc_set_next_ask_id_for_testing(uint32_t next_id)
+{
+    lock_asks();
+    next_ask_id = next_id;
+    unlock_asks();
+}
+
 void _ipc_reset_for_testing(void)
 {
     reg_count     = 0;
@@ -66,6 +99,10 @@ void _ipc_reset_for_testing(void)
     memset(reg_table, 0, sizeof(reg_table));
     memset(sub_table, 0, sizeof(sub_table));
     memset(handler_table, 0, sizeof(handler_table));
+    lock_asks();
+    memset(ask_table, 0, sizeof(ask_table));
+    next_ask_id = 1;
+    unlock_asks();
     actors_started  = false;
     _ipc_actor_list = NULL;
 }
@@ -149,10 +186,59 @@ static struct ipc_actor *find_registered(uint32_t msg_id)
     return NULL;
 }
 
+static ipc_pending_ask_t *find_pending_ask(uint32_t ask_id)
+{
+    for (int i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES; i++) {
+        if (ask_table[i].used && ask_table[i].ask_id == ask_id) {
+            return &ask_table[i];
+        }
+    }
+    return NULL;
+}
+
+static ipc_pending_ask_t *alloc_pending_ask(void)
+{
+    for (int i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES; i++) {
+        if (!ask_table[i].used) {
+            return &ask_table[i];
+        }
+    }
+    return NULL;
+}
+
+static int alloc_ask_id(uint32_t *ask_id)
+{
+    for (int i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES + 2; i++) {
+        uint32_t candidate = next_ask_id++;
+        if (candidate == 0) {
+            candidate = next_ask_id++;
+        }
+        if (!find_pending_ask(candidate)) {
+            *ask_id = candidate;
+            return 0;
+        }
+    }
+    return -ENOMEM;
+}
+
+static bool registration_closed(const char *op)
+{
+    if (actors_started) {
+        fprintf(stderr, "ipc: %s after ipc_start_all_actors() is not supported\n", op);
+        assert(0 && "IPC runtime registration is forbidden");
+        return true;
+    }
+    return false;
+}
+
 /* ── Static actor registration ───────────────────────────────────────────── */
 
 void _ipc_actor_register_static(struct ipc_actor *actor)
 {
+    if (registration_closed("actor registration")) {
+        return;
+    }
+
     /* Static actor startup hooks run during process/kernel startup before
      * application concurrency begins, so keep this registration path free
      * of port locks (some ports' kernel primitives are not ready during
@@ -172,6 +258,10 @@ void _ipc_actor_register_static(struct ipc_actor *actor)
 void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t *desc,
                                         ipc_actor_msg_handler_t handler)
 {
+    if (registration_closed("handler registration")) {
+        return;
+    }
+
     _ipc_actor_register_static(actor);
     _ipc_ensure_id(desc);
 
@@ -192,12 +282,18 @@ void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t 
 
 void _ipc_actor_register_start_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook)
 {
+    if (registration_closed("start hook registration")) {
+        return;
+    }
     _ipc_actor_register_static(actor);
     actor->start_hook = hook;
 }
 
 void _ipc_actor_register_stop_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook)
 {
+    if (registration_closed("stop hook registration")) {
+        return;
+    }
     _ipc_actor_register_static(actor);
     actor->stop_hook = hook;
 }
@@ -205,6 +301,9 @@ void _ipc_actor_register_stop_hook_static(struct ipc_actor *actor, ipc_actor_lif
 void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
                                              ipc_actor_unknown_handler_t hook)
 {
+    if (registration_closed("unknown hook registration")) {
+        return;
+    }
     _ipc_actor_register_static(actor);
     actor->unknown_handler = hook;
 }
@@ -212,12 +311,18 @@ void _ipc_actor_register_unknown_hook_static(struct ipc_actor *actor,
 void _ipc_actor_register_supervision_static(struct ipc_actor *actor,
                                             ipc_supervision_strategy_t strategy)
 {
+    if (registration_closed("supervision registration")) {
+        return;
+    }
     _ipc_actor_register_static(actor);
     actor->supervision = strategy;
 }
 
 void _ipc_actor_register_failure_hook_static(struct ipc_actor *actor, ipc_actor_failure_hook_t hook)
 {
+    if (registration_closed("failure hook registration")) {
+        return;
+    }
     _ipc_actor_register_static(actor);
     actor->failure_hook = hook;
 }
@@ -268,6 +373,140 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
     struct ipc_msg msg;
     int rc = prepare_registered_cmd(desc, payload, "send_after", &target, &msg);
     return rc ? rc : ipc_port_send_after(target, &msg, delay_ms);
+}
+
+int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
+                        const void *request_payload, ipc_msg_desc_t *reply_desc,
+                        ipc_ask_callback_t callback, uint32_t *ask_id_out)
+{
+    if (ask_id_out) {
+        *ask_id_out = 0;
+    }
+    if (!self || !request_desc || !reply_desc || !callback || request_desc->kind != IPC_CMD ||
+        reply_desc->kind != IPC_CMD) {
+        return -EINVAL;
+    }
+
+    struct ipc_actor *target;
+    struct ipc_msg msg;
+    int rc = prepare_registered_cmd(request_desc, request_payload, "ask", &target, &msg);
+    if (rc) {
+        return rc;
+    }
+
+    _ipc_ensure_id(reply_desc);
+    if (reply_desc->size > actor_max_payload_size(self)) {
+        return -EMSGSIZE;
+    }
+
+    lock_asks();
+    ipc_pending_ask_t *pending = alloc_pending_ask();
+    if (!pending) {
+        unlock_asks();
+        return -ENOMEM;
+    }
+
+    uint32_t ask_id = 0;
+    rc              = alloc_ask_id(&ask_id);
+    if (rc) {
+        unlock_asks();
+        return rc;
+    }
+
+    *pending = (ipc_pending_ask_t) {
+        .used     = true,
+        .ask_id   = ask_id,
+        .reply_id = reply_desc->id,
+        .actor    = self,
+        .callback = callback,
+    };
+    unlock_asks();
+
+    msg.ask_id   = ask_id;
+    msg.reply_id = reply_desc->id;
+    rc           = ipc_port_send(target, &msg);
+    if (rc) {
+        lock_asks();
+        ipc_pending_ask_t *failed_pending = find_pending_ask(ask_id);
+        if (failed_pending) {
+            memset(failed_pending, 0, sizeof(*failed_pending));
+        }
+        unlock_asks();
+        return rc;
+    }
+
+    if (ask_id_out) {
+        *ask_id_out = ask_id;
+    }
+    return 0;
+}
+
+int ipc_ask_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc, const void *request_payload,
+                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback)
+{
+    return ipc_ask_with_id_raw(self, request_desc, request_payload, reply_desc, callback, NULL);
+}
+
+int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id)
+{
+    if (!self || ask_id == 0) {
+        return -EINVAL;
+    }
+
+    lock_asks();
+    ipc_pending_ask_t *pending = find_pending_ask(ask_id);
+    if (!pending || pending->actor != self) {
+        unlock_asks();
+        return -ENOENT;
+    }
+    memset(pending, 0, sizeof(*pending));
+    unlock_asks();
+    return 0;
+}
+
+int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
+                  const void *reply_payload)
+{
+    if (!request_msg || !reply_desc || request_msg->ask_id == 0 || reply_desc->kind != IPC_CMD) {
+        return -EINVAL;
+    }
+
+    _ipc_ensure_id(reply_desc);
+    lock_asks();
+    ipc_pending_ask_t *pending = find_pending_ask(request_msg->ask_id);
+    if (!pending) {
+        unlock_asks();
+        return -ENOENT;
+    }
+    if (pending->reply_id != reply_desc->id || request_msg->reply_id != reply_desc->id) {
+        unlock_asks();
+        return -EINVAL;
+    }
+    if (pending->reply_sent) {
+        unlock_asks();
+        return -EALREADY;
+    }
+    struct ipc_actor *target = pending->actor;
+    if (reply_desc->size > actor_max_payload_size(target)) {
+        memset(pending, 0, sizeof(*pending));
+        unlock_asks();
+        return -EMSGSIZE;
+    }
+    pending->reply_sent = true;
+    unlock_asks();
+
+    struct ipc_msg msg = make_msg(reply_desc, reply_payload);
+    msg.ask_id         = request_msg->ask_id;
+    int rc             = ipc_port_send(target, &msg);
+    if (rc) {
+        lock_asks();
+        ipc_pending_ask_t *failed_pending = find_pending_ask(request_msg->ask_id);
+        if (failed_pending) {
+            memset(failed_pending, 0, sizeof(*failed_pending));
+        }
+        unlock_asks();
+    }
+    return rc;
 }
 
 static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
@@ -336,6 +575,25 @@ int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
 
 void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *msg)
 {
+    if (!self || !msg) {
+        return;
+    }
+
+    if (msg->ask_id != 0) {
+        ipc_ask_callback_t callback = NULL;
+        lock_asks();
+        ipc_pending_ask_t *pending = find_pending_ask(msg->ask_id);
+        if (pending && pending->actor == self && pending->reply_id == msg->id) {
+            callback = pending->callback;
+            memset(pending, 0, sizeof(*pending));
+        }
+        unlock_asks();
+        if (callback) {
+            callback(self, 0, msg->payload, msg->size, msg);
+            return;
+        }
+    }
+
     for (int i = 0; i < handler_count; i++) {
         const ipc_handler_binding_t *binding = &handler_table[i];
         if (binding->actor == self && binding->msg_id == msg->id) {

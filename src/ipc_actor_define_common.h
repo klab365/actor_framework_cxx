@@ -33,6 +33,30 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
         handler_fn(self, (const MsgType##_payload_t *) payload, raw_msg);           \
     }
 
+#define IPC_ACTOR_RESPONSE_HANDLE(actor_sym, RequestType, ReplyType, handler_fn)            \
+    static_assert(sizeof(ReplyType##_payload_t) <= actor_sym##_max_payload_size,            \
+                  #ReplyType " reply payload exceeds actor max payload size");              \
+    static void handler_fn##_ipc_typed(struct ipc_actor *self, int result,                  \
+                                       const ReplyType##_payload_t *msg,                    \
+                                       const struct ipc_msg *raw_msg);                      \
+    static void handler_fn(struct ipc_actor *self, int result, const void *reply_payload,   \
+                           size_t reply_size, const struct ipc_msg *raw_msg)                \
+    {                                                                                       \
+        (void) RequestType##_reply_desc;                                                    \
+        assert(RequestType##_reply_desc == &(ReplyType));                                   \
+        if (result == 0) {                                                                  \
+            assert(reply_size == sizeof(ReplyType##_payload_t));                            \
+            if (reply_size != sizeof(ReplyType##_payload_t)) {                              \
+                return;                                                                     \
+            }                                                                               \
+        }                                                                                   \
+        handler_fn##_ipc_typed(self, result, (const ReplyType##_payload_t *) reply_payload, \
+                               raw_msg);                                                    \
+    }                                                                                       \
+    static void handler_fn##_ipc_typed(struct ipc_actor *self, int result,                  \
+                                       const ReplyType##_payload_t *msg,                    \
+                                       const struct ipc_msg *raw_msg)
+
 #ifdef __cplusplus
 }
 #endif
