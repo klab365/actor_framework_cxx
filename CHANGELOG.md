@@ -2,12 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## 1.1.0 (2026-08-05)
+## 1.1.0 (2026-08-06)
 
 ### Added
 
+- Added `ipc_send_to()` for O(1) direct actor mailbox delivery, intended for interrupt-originated work after actor startup.
+- Added `IPC_ACTOR_DEFINE_PUBLIC()` for explicitly exported actor handles when direct cross-file actor access is needed.
+- Added shared message descriptor declarations with `IPC_CMD_DECLARE()` / `IPC_EVENT_DECLARE()` and extern definitions with `IPC_CMD_DEFINE()` / `IPC_EVENT_DEFINE()`.
+- Added local-only message definition macros `IPC_CMD_DEFINE_LOCAL()` and `IPC_EVENT_DEFINE_LOCAL()`.
 - Added asynchronous ask/reply messaging with typed reply descriptors, correlation IDs, response handlers, reply helpers, and cancellation support.
 - Added ask/reply coverage to POSIX and Zephyr message storage paths, examples, README documentation, and unit tests.
+
+### Changed
+
+- Documented the recommended ISR pattern: post directly to a driver/local actor with `ipc_send_to()`, then publish fan-out events from actor context.
+- Updated examples and tests to use the explicit local/shared message definition macros.
+
+### Removed
+
+- Removed ISR publish APIs because publish fan-out scans subscribers and is not O(1) in interrupt context.
 
 ## 1.0.0 (2026-07-27)
 

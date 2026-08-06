@@ -10,9 +10,9 @@ extern "C" {
 #include <string.h>
 }
 
-IPC_CMD_DEFINE(MsgA, { int x; });
-IPC_CMD_DEFINE(MsgB, { int y; });
-IPC_EVENT_DEFINE(EvtA, { int v; });
+IPC_CMD_DEFINE_LOCAL(MsgA, { int x; });
+IPC_CMD_DEFINE_LOCAL(MsgB, { int y; });
+IPC_EVENT_DEFINE_LOCAL(EvtA, { int v; });
 
 struct ipc_actor g_actor;
 struct ipc_actor g_no_handler;
@@ -63,8 +63,9 @@ void register_static_handler(struct ipc_actor *actor, const char *name, ipc_msg_
                              ipc_actor_msg_handler_t handler)
 {
     memset(actor, 0, sizeof(*actor));
-    actor->name    = name;
-    actor->handler = nullptr;
+    actor->name                 = name;
+    actor->cfg.max_payload_size = 512;
+    actor->handler              = nullptr;
     _ipc_actor_register_handler_static(actor, desc, handler);
 }
 
@@ -76,11 +77,13 @@ class ErrorPathTest : public ::testing::Test
         _ipc_reset_for_testing();
         mock_port_init();
         memset(&g_actor, 0, sizeof(g_actor));
-        g_actor.name    = "test_actor";
-        g_actor.handler = nullptr;
+        g_actor.name                 = "test_actor";
+        g_actor.cfg.max_payload_size = 512;
+        g_actor.handler              = nullptr;
         memset(&g_no_handler, 0, sizeof(g_no_handler));
-        g_no_handler.name    = "no_handler_actor";
-        g_no_handler.handler = nullptr;
+        g_no_handler.name                 = "no_handler_actor";
+        g_no_handler.cfg.max_payload_size = 512;
+        g_no_handler.handler              = nullptr;
     }
 
     void TearDown() override

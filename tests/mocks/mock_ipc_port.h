@@ -28,6 +28,7 @@ typedef struct {
     int stop_count;
     int restart_count;
     int send_count;
+    int send_isr_count;
     int send_after_count;
     uint32_t last_send_after_delay_ms;
     struct ipc_msg last_send_msg;

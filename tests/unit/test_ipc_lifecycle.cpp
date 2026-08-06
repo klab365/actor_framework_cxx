@@ -23,7 +23,7 @@ void test_ipc_hooks_dispatch_unknown(uint32_t msg_id);
 namespace
 {
 
-IPC_CMD_DEFINE(LifecycleCmd, { int dummy; });
+IPC_CMD_DEFINE_LOCAL(LifecycleCmd, { int dummy; });
 
 struct ipc_actor g_a, g_b;
 
@@ -63,8 +63,8 @@ class LifecycleTest : public ::testing::Test
 
 TEST_F(LifecycleTest, StaticActorRegistrationAddsToListButDoesNotStart)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    define_test_actor(&g_b, "b", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0, 0});
 
     EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 0);
     EXPECT_EQ(mock_port_actor_state(&g_b)->start_count, 0);
@@ -76,7 +76,7 @@ TEST_F(LifecycleTest, StaticActorRegistrationAddsToListButDoesNotStart)
 
 TEST_F(LifecycleTest, RunAllReturnsProgrammableRc)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
     mock_port_set_run_all_rc(-EIO);
@@ -87,8 +87,8 @@ TEST_F(LifecycleTest, RunAllReturnsProgrammableRc)
 
 TEST_F(LifecycleTest, StopAllCallsStopOnEveryActor)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    define_test_actor(&g_b, "b", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0, 0});
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
     ipc_stop_all();
@@ -99,7 +99,7 @@ TEST_F(LifecycleTest, StopAllCallsStopOnEveryActor)
 #ifndef NDEBUG
 TEST_F(LifecycleTest, ActorRegistrationAfterStartIsForbidden)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
     ASSERT_DEATH(_ipc_actor_register_static(&g_b), "runtime registration is forbidden");
@@ -107,7 +107,7 @@ TEST_F(LifecycleTest, ActorRegistrationAfterStartIsForbidden)
 
 TEST_F(LifecycleTest, HandlerRegistrationAfterStartIsForbidden)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
     ASSERT_DEATH(_ipc_actor_register_handler_static(&g_a, &LifecycleCmd, lifecycle_cmd_handler),
@@ -117,8 +117,8 @@ TEST_F(LifecycleTest, HandlerRegistrationAfterStartIsForbidden)
 
 TEST_F(LifecycleTest, ReRegisteringExistingActorForHandlerDoesNotCorruptActorList)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    define_test_actor(&g_b, "b", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0, 0});
 
     _ipc_actor_register_handler_static(&g_a, &LifecycleCmd, lifecycle_cmd_handler);
 
@@ -130,9 +130,10 @@ TEST_F(LifecycleTest, ReRegisteringExistingActorForHandlerDoesNotCorruptActorLis
 TEST_F(LifecycleTest, StaticActorRegistrationPreservesCfgFields)
 {
     struct ipc_actor_cfg cfg = {
-        .stack_size  = 1024,
-        .priority    = 7,
-        .queue_depth = 4,
+        .stack_size       = 1024,
+        .priority         = 7,
+        .queue_depth      = 4,
+        .max_payload_size = 0,
     };
     define_test_actor(&g_a, "a", cfg);
 
@@ -148,8 +149,8 @@ TEST_F(LifecycleTest, StartAllOnEmptyActorListIsNoop)
 
 TEST_F(LifecycleTest, StartAllPropagatesFirstPortError)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
-    define_test_actor(&g_b, "b", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0, 0});
     mock_port_set_next_start_should_fail(&g_a);
 
     int rc = ipc_start_all_actors();
@@ -194,7 +195,7 @@ TEST_F(LifecycleTest, ActorFailureRejectsNullActor)
 
 TEST_F(LifecycleTest, ActorFailureWithDefaultSupervisionDoesNothing)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
 
     EXPECT_EQ(ipc_actor_fail(&g_a, -EIO), 0);
     EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 0);
@@ -218,7 +219,7 @@ TEST_F(LifecycleTest, ActorFailureWithRestartSupervisionRestartsAndCallsHooks)
 
 TEST_F(LifecycleTest, ActorFailureWithStopSupervisionStopsActor)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
     _ipc_actor_register_supervision_static(&g_a, IPC_SUPERVISE_STOP);
 
     EXPECT_EQ(ipc_actor_fail(&g_a, -EIO), 0);
@@ -243,7 +244,7 @@ TEST_F(LifecycleTest, ActorFailurePropagatesRestartErrorAndSkipsStartHook)
 
 TEST_F(LifecycleTest, ActorFailureRejectsInvalidSupervisionStrategy)
 {
-    define_test_actor(&g_a, "a", {0, 0, 0});
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
     _ipc_actor_register_supervision_static(&g_a, static_cast<ipc_supervision_strategy_t>(99));
 
     EXPECT_EQ(ipc_actor_fail(&g_a, -EIO), -EINVAL);

@@ -16,6 +16,13 @@ extern "C" {
 #include "ipc_internal.h"
 #include "ipc_port.h"
 #include "mock_ipc_port.h"
+void test_ipc_hooks_reset_counters(void);
+void test_ipc_hooks_register_local_irq_handler(void);
+struct ipc_actor *test_ipc_hooks_actor(void);
+int test_ipc_hooks_local_irq_count(void);
+uint8_t test_ipc_hooks_local_irq_pin(void);
+uint32_t test_ipc_hooks_local_irq_id(void);
+int test_ipc_hooks_send_local_irq(uint8_t pin);
 #include <errno.h>
 #include <string.h>
 }
@@ -23,23 +30,27 @@ extern "C" {
 namespace
 {
 
-IPC_CMD_DEFINE(MsgA, { int x; });
-IPC_CMD_DEFINE(MsgB, { int y; });
-IPC_EVENT_DEFINE(EvtA, { int v; });
-IPC_EVENT_DEFINE(EvtB, { int v; });
-IPC_CMD_DEFINE(EmptyCmd, {}); /* desc->size == 0 */
-IPC_CMD_DEFINE(StaticHandledCmd, { int value; });
-IPC_EVENT_DEFINE(StaticHandledEvt, { int value; });
-IPC_CMD_DEFINE(LargeCmd, { uint8_t bytes[64]; });
-IPC_CMD_DEFINE(SmallCmd, { uint8_t bytes[3]; });
-IPC_CMD_DEFINE(DefaultFallbackCmd, { int value; });
-IPC_CMD_DEFINE(GetMeasurements, {});
+IPC_CMD_DEFINE_LOCAL(MsgA, { int x; });
+IPC_CMD_DEFINE_LOCAL(MsgB, { int y; });
+IPC_EVENT_DEFINE_LOCAL(EvtA, { int v; });
+IPC_EVENT_DEFINE_LOCAL(EvtB, { int v; });
+IPC_CMD_DEFINE_LOCAL(EmptyCmd, {}); /* desc->size == 0 */
+IPC_CMD_DEFINE_LOCAL(StaticHandledCmd, { int value; });
+IPC_EVENT_DEFINE_LOCAL(StaticHandledEvt, { int value; });
+IPC_CMD_DEFINE_LOCAL(LargeCmd, { uint8_t bytes[64]; });
+IPC_CMD_DEFINE_LOCAL(SmallCmd, { uint8_t bytes[3]; });
+IPC_CMD_DEFINE_LOCAL(DefaultFallbackCmd, { int value; });
+IPC_CMD_DEFINE_LOCAL(GetMeasurements, {});
 IPC_CMD_REPLY_DEFINE(GetMeasurements, MeasurementsReply, { int value; });
-IPC_CMD_DEFINE(NoReplyRequest, { int value; });
+IPC_CMD_DEFINE_LOCAL(NoReplyRequest, { int value; });
 IPC_CMD_REPLY_DEFINE(NoReplyRequest, NoReplyResponse, { int value; });
-IPC_CMD_DEFINE(LargeReplyRequest, {});
+IPC_CMD_DEFINE_LOCAL(LargeReplyRequest, {});
 IPC_CMD_REPLY_DEFINE(LargeReplyRequest, LargeReplyResponse, { uint8_t bytes[64]; });
-IPC_CMD_DEFINE(WrongReplyResponse, { int value; });
+IPC_CMD_DEFINE_LOCAL(WrongReplyResponse, { int value; });
+IPC_CMD_DECLARE(DeclaredCmd, { int z; });
+IPC_CMD_DEFINE(DeclaredCmd);
+IPC_EVENT_DECLARE(DeclaredEvt, { int z; });
+IPC_EVENT_DEFINE(DeclaredEvt);
 static_assert(IPC_MESSAGE_MAX(SmallCmd, LargeCmd) == sizeof(LargeCmd_payload_t),
               "IPC_MESSAGE_MAX returns largest payload size");
 
@@ -134,6 +145,14 @@ void on_evt_a_shim(struct ipc_actor *self, const void *payload, const struct ipc
     on_evt_a(self, (const EvtA_payload_t *) payload, raw_msg);
 }
 
+void on_declared_cmd_shim(struct ipc_actor *self, const void *payload,
+                          const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) payload;
+    (void) raw_msg;
+}
+
 static void on_get_measurements(struct ipc_actor *self, const GetMeasurements_payload_t *msg,
                                 const struct ipc_msg *raw_msg)
 {
@@ -206,8 +225,9 @@ struct ipc_actor g_actor;
 void register_evt_a_subscriber(struct ipc_actor *actor, const char *name)
 {
     memset(actor, 0, sizeof(*actor));
-    actor->name    = name;
-    actor->handler = nullptr;
+    actor->name                 = name;
+    actor->cfg.max_payload_size = 512;
+    actor->handler              = nullptr;
     _ipc_actor_register_handler_static(actor, &EvtA, on_evt_a_shim);
 }
 
@@ -228,6 +248,7 @@ class SendTest : public ::testing::Test
         g_no_reply_callback_calls     = 0;
         g_no_reply_callback_value     = 0;
         g_actor.name                  = "test_actor";
+        g_actor.cfg.max_payload_size  = 512;
         g_actor.handler               = nullptr;
         _ipc_actor_register_handler_static(&g_actor, &MsgA, on_msg_a_shim);
         _ipc_actor_register_handler_static(&g_actor, &MsgB, on_msg_b_shim);
@@ -242,9 +263,10 @@ class SendTest : public ::testing::Test
 
 TEST_F(SendTest, StaticHandlerActorRoutesWithoutExplicitRegister)
 {
-    struct ipc_actor static_actor = {};
-    static_actor.name             = "static_actor";
-    static_actor.handler          = ipc_dispatch_actor_handlers;
+    struct ipc_actor static_actor     = {};
+    static_actor.name                 = "static_actor";
+    static_actor.cfg.max_payload_size = 512;
+    static_actor.handler              = ipc_dispatch_actor_handlers;
 
     _ipc_actor_register_handler_static(&static_actor, &StaticHandledCmd,
                                        on_static_handled_cmd_shim);
@@ -267,10 +289,11 @@ TEST_F(SendTest, StaticHandlerActorRoutesWithoutExplicitRegister)
 
 TEST_F(SendTest, AskRawRejectsInvalidArguments)
 {
-    struct ipc_actor asking_actor = {};
-    asking_actor.name             = "asking_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
 
-    uint32_t ask_id               = 123;
+    uint32_t ask_id                   = 123;
     EXPECT_EQ(ipc_ask_with_id_raw(nullptr, &NoReplyRequest, nullptr, NoReplyRequest_reply_desc,
                                   on_no_reply_response, &ask_id),
               -EINVAL);
@@ -294,10 +317,11 @@ TEST_F(SendTest, AskRawRejectsInvalidArguments)
 
 TEST_F(SendTest, AskRejectsUnregisteredRequest)
 {
-    struct ipc_actor asking_actor = {};
-    asking_actor.name             = "asking_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
 
-    uint32_t ask_id               = 123;
+    uint32_t ask_id                   = 123;
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, nullptr,
                                   NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
               -ENOENT);
@@ -306,15 +330,17 @@ TEST_F(SendTest, AskRejectsUnregisteredRequest)
 
 TEST_F(SendTest, AskSendFailureRemovesPendingAsk)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
-    NoReplyRequest_payload_t request = {.value = 1};
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    NoReplyRequest_payload_t request  = {.value = 1};
 
-    uint32_t failed_id               = 123;
+    uint32_t failed_id                = 123;
     mock_port_set_next_send_rc(-EIO);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
                                   NoReplyRequest_reply_desc, on_no_reply_response, &failed_id),
@@ -332,17 +358,20 @@ TEST_F(SendTest, AskSendFailureRemovesPendingAsk)
 
 TEST_F(SendTest, AskCancelRejectsInvalidOrUnknownAsk)
 {
-    struct ipc_actor asking_actor = {};
-    asking_actor.name             = "asking_actor";
-    struct ipc_actor other_actor  = {};
-    other_actor.name              = "other_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    struct ipc_actor other_actor      = {};
+    other_actor.name                  = "other_actor";
+    other_actor.cfg.max_payload_size  = 512;
 
     EXPECT_EQ(ipc_ask_cancel(nullptr, 1), -EINVAL);
     EXPECT_EQ(ipc_ask_cancel(&asking_actor, 0), -EINVAL);
     EXPECT_EQ(ipc_ask_cancel(&asking_actor, 42), -ENOENT);
 
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
     NoReplyRequest_payload_t request = {.value = 1};
@@ -371,8 +400,9 @@ TEST_F(SendTest, ReplyRawRejectsInvalidArguments)
 
 TEST_F(SendTest, DispatchIgnoresNullActorOrMessage)
 {
-    struct ipc_actor actor = {};
-    actor.name             = "actor";
+    struct ipc_actor actor     = {};
+    actor.name                 = "actor";
+    actor.cfg.max_payload_size = 512;
 
     ipc_dispatch_actor_handlers(nullptr, nullptr);
     ipc_dispatch_actor_handlers(&actor, nullptr);
@@ -380,14 +410,16 @@ TEST_F(SendTest, DispatchIgnoresNullActorOrMessage)
 
 TEST_F(SendTest, AskInvokesCallbackOnReplyInAskingActorContext)
 {
-    struct ipc_actor sensor_actor = {};
-    sensor_actor.name             = "sensor_actor";
-    sensor_actor.handler          = ipc_dispatch_actor_handlers;
+    struct ipc_actor sensor_actor     = {};
+    sensor_actor.name                 = "sensor_actor";
+    sensor_actor.cfg.max_payload_size = 512;
+    sensor_actor.handler              = ipc_dispatch_actor_handlers;
     _ipc_actor_register_handler_static(&sensor_actor, &GetMeasurements, on_get_measurements_shim);
 
-    struct ipc_actor asking_actor = {};
-    asking_actor.name             = "asking_actor";
-    asking_actor.handler          = ipc_dispatch_actor_handlers;
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    asking_actor.handler              = ipc_dispatch_actor_handlers;
 
     mock_port_set_invoke_handlers(true);
 
@@ -398,8 +430,9 @@ TEST_F(SendTest, AskInvokesCallbackOnReplyInAskingActorContext)
 
 TEST_F(SendTest, AskRejectsOversizedExpectedReplyBeforeSendingRequest)
 {
-    struct ipc_actor target = {};
-    target.name             = "large_reply_target";
+    struct ipc_actor target     = {};
+    target.name                 = "large_reply_target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &LargeReplyRequest, on_large_reply_request_shim);
 
     struct ipc_actor asking_actor     = {};
@@ -414,14 +447,16 @@ TEST_F(SendTest, AskRejectsOversizedExpectedReplyBeforeSendingRequest)
 
 TEST_F(SendTest, AskTableFullReturnsNoMem)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
 
-    NoReplyRequest_payload_t request = {.value = 1};
+    NoReplyRequest_payload_t request  = {.value = 1};
     for (size_t i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES; i++) {
         uint32_t ask_id = 0;
         ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
@@ -439,16 +474,18 @@ TEST_F(SendTest, AskTableFullReturnsNoMem)
 
 TEST_F(SendTest, AskCancelRemovesPendingAsk)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
-    asking_actor.handler             = ipc_dispatch_actor_handlers;
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    asking_actor.handler              = ipc_dispatch_actor_handlers;
 
-    NoReplyRequest_payload_t request = {.value = 1};
-    uint32_t ask_id                  = 0;
+    NoReplyRequest_payload_t request  = {.value = 1};
+    uint32_t ask_id                   = 0;
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
                                   NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
               0);
@@ -463,15 +500,17 @@ TEST_F(SendTest, AskCancelRemovesPendingAsk)
 
 TEST_F(SendTest, AskIdsSkipZeroAndExistingPendingIds)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
 
-    NoReplyRequest_payload_t request = {.value = 1};
-    uint32_t first_id                = 0;
+    NoReplyRequest_payload_t request  = {.value = 1};
+    uint32_t first_id                 = 0;
     _ipc_set_next_ask_id_for_testing(UINT32_MAX);
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
                                   NoReplyRequest_reply_desc, on_no_reply_response, &first_id),
@@ -495,14 +534,16 @@ TEST_F(SendTest, AskIdsSkipZeroAndExistingPendingIds)
 
 TEST_F(SendTest, ReplyWithWrongTypeIsRejectedAndPendingAskRemains)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
 
-    NoReplyRequest_payload_t request = {.value = 1};
+    NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
                           on_no_reply_response),
               0);
@@ -516,8 +557,9 @@ TEST_F(SendTest, ReplyWithWrongTypeIsRejectedAndPendingAskRemains)
 
 TEST_F(SendTest, ReplyRejectsOversizedPayloadAndRemovesPendingAsk)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
     struct ipc_actor asking_actor     = {};
@@ -537,14 +579,16 @@ TEST_F(SendTest, ReplyRejectsOversizedPayloadAndRemovesPendingAsk)
 
 TEST_F(SendTest, ReplySendFailureRemovesPendingAsk)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
 
-    NoReplyRequest_payload_t request = {.value = 1};
+    NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
                           on_no_reply_response),
               0);
@@ -557,15 +601,17 @@ TEST_F(SendTest, ReplySendFailureRemovesPendingAsk)
 
 TEST_F(SendTest, DuplicateAndLateRepliesAreRejected)
 {
-    struct ipc_actor target = {};
-    target.name             = "target";
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
 
-    struct ipc_actor asking_actor    = {};
-    asking_actor.name                = "asking_actor";
-    asking_actor.handler             = ipc_dispatch_actor_handlers;
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    asking_actor.handler              = ipc_dispatch_actor_handlers;
 
-    NoReplyRequest_payload_t request = {.value = 1};
+    NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
                           on_no_reply_response),
               0);
@@ -655,15 +701,15 @@ TEST_F(SendTest, PublishReportsOversizedSubscriberAndContinuesFanout)
     EXPECT_EQ(mock_port_last_send_msg(&large_sub)->payload[0], 77);
 }
 
-TEST_F(SendTest, NullMaxPayloadFallsBackToCompatibilityDefault)
+TEST_F(SendTest, ZeroMaxPayloadRejectsNonEmptyMessage)
 {
     struct ipc_actor default_actor = {};
     default_actor.name             = "default_actor";
     _ipc_actor_register_handler_static(&default_actor, &DefaultFallbackCmd, on_msg_a_shim);
 
     DefaultFallbackCmd_payload_t payload = {.value = 9};
-    EXPECT_EQ(ipc_send_raw(&DefaultFallbackCmd, &payload), 0);
-    EXPECT_TRUE(mock_port_has_last_send_msg(&default_actor));
+    EXPECT_EQ(ipc_send_raw(&DefaultFallbackCmd, &payload), -EMSGSIZE);
+    EXPECT_FALSE(mock_port_has_last_send_msg(&default_actor));
 }
 
 TEST_F(SendTest, SendCopiesPayloadAndKind)
@@ -732,55 +778,130 @@ TEST_F(SendTest, PublishReturnsLastError)
     EXPECT_EQ(rc, -ENOMEM);
 }
 
-TEST_F(SendTest, IsrPublishRequiresStartedActors)
+TEST_F(SendTest, LocalDefineActorHandleInitializesIdForDirectSendTo)
 {
-    struct ipc_actor sub;
-    register_evt_a_subscriber(&sub, "sub");
-
-    EvtA_payload_t payload = {.v = 1};
-    EXPECT_EQ(ipc_publish_isr_raw(&EvtA, &payload), -EPERM);
-    EXPECT_EQ(mock_port_actor_state(&sub)->send_count, 0);
-}
-
-TEST_F(SendTest, IsrPublishFansOutAfterStartAll)
-{
-    struct ipc_actor sub1, sub2;
-    register_evt_a_subscriber(&sub1, "sub1");
-    register_evt_a_subscriber(&sub2, "sub2");
+    test_ipc_hooks_reset_counters();
+    test_ipc_hooks_register_local_irq_handler();
+    EXPECT_NE(test_ipc_hooks_local_irq_id(), 0u);
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
-    EvtA_payload_t payload = {.v = 77};
-    ASSERT_EQ(ipc_publish_isr_raw(&EvtA, &payload), 0);
+    mock_port_set_invoke_handlers(true);
+    ASSERT_EQ(test_ipc_hooks_send_local_irq(3), 0);
+    mock_port_set_invoke_handlers(false);
 
-    EXPECT_EQ(mock_port_actor_state(&sub1)->send_count, 1);
-    EXPECT_EQ(mock_port_actor_state(&sub2)->send_count, 1);
-    EXPECT_EQ(mock_port_actor_state(&sub1)->last_send_msg.kind, IPC_EVENT);
-    EXPECT_EQ(mock_port_actor_state(&sub1)->last_send_msg.id, EvtA.id);
-    EXPECT_EQ(mock_port_actor_state(&sub1)->last_send_msg.payload[0], 77);
+    auto *st = mock_port_actor_state(test_ipc_hooks_actor());
+    EXPECT_EQ(st->send_isr_count, 1);
+    EXPECT_EQ(st->last_send_msg.id, test_ipc_hooks_local_irq_id());
+    EXPECT_EQ(test_ipc_hooks_local_irq_count(), 1);
+    EXPECT_EQ(test_ipc_hooks_local_irq_pin(), 3u);
 }
 
-TEST_F(SendTest, IsrPublishRejectsUninitializedDescriptorId)
+TEST_F(SendTest, DeclareDefineDescriptorsCanBeUsedForDirectSendTo)
 {
-    static ipc_msg_desc_t UntouchedEvt = {
+    struct ipc_actor direct     = {};
+    direct.name                 = "direct";
+    direct.cfg.max_payload_size = 512;
+    DeclaredCmd.id              = 0;
+
+    _ipc_actor_register_handler_static(&direct, &DeclaredCmd, on_declared_cmd_shim);
+    EXPECT_NE(DeclaredCmd.id, 0u);
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    DeclaredCmd_payload_t payload = {.z = 55};
+    ASSERT_EQ(ipc_send_to_raw(&direct, &DeclaredCmd, &payload), 0);
+
+    auto *st = mock_port_actor_state(&direct);
+    EXPECT_EQ(st->send_isr_count, 1);
+    EXPECT_EQ(st->last_send_msg.id, DeclaredCmd.id);
+    EXPECT_EQ(st->last_send_msg.kind, IPC_CMD);
+    EXPECT_EQ(st->last_send_msg.size, sizeof(DeclaredCmd_payload_t));
+    EXPECT_EQ(DeclaredEvt.kind, IPC_EVENT);
+    EXPECT_EQ(DeclaredEvt.size, sizeof(DeclaredEvt_payload_t));
+}
+
+TEST_F(SendTest, SendToBypassesRouteLookup)
+{
+    struct ipc_actor routed          = {};
+    routed.name                      = "routed";
+    routed.cfg.max_payload_size      = 512;
+    struct ipc_actor direct          = {};
+    direct.name                      = "direct";
+    direct.cfg.max_payload_size      = 512;
+
+    static ipc_msg_desc_t DirectOnly = {
         .id   = 0,
-        .kind = IPC_EVENT,
-        .size = sizeof(EvtA_payload_t),
-        .name = "UntouchedEvt",
+        .kind = IPC_CMD,
+        .size = sizeof(MsgA_payload_t),
+        .name = "DirectOnly",
     };
+    _ipc_actor_register_handler_static(&routed, &DirectOnly, on_msg_a_shim);
+    ASSERT_NE(DirectOnly.id, 0u);
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
-    EvtA_payload_t payload = {.v = 1};
-    EXPECT_EQ(ipc_publish_isr_raw(&UntouchedEvt, &payload), -EINVAL);
-    EXPECT_EQ(UntouchedEvt.id, 0u);
+    MsgA_payload_t payload = {.x = 42};
+    ASSERT_EQ(ipc_send_to_raw(&direct, &DirectOnly, &payload), 0);
+
+    auto *direct_st = mock_port_actor_state(&direct);
+    auto *routed_st = mock_port_actor_state(&routed);
+    EXPECT_EQ(direct_st->send_count, 1);
+    EXPECT_EQ(direct_st->send_isr_count, 1);
+    EXPECT_EQ(routed_st->send_count, 0);
+    EXPECT_EQ(direct_st->last_send_msg.id, DirectOnly.id);
+    EXPECT_EQ(direct_st->last_send_msg.kind, IPC_CMD);
+    EXPECT_EQ(direct_st->last_send_msg.payload[0], 42);
 }
 
-TEST_F(SendTest, IsrPublishRejectsNullAndCommandDescriptors)
+TEST_F(SendTest, SendToRejectsInvalidArgumentsAndOversizedPayload)
 {
+    struct ipc_actor small     = {};
+    small.name                 = "small";
+    small.cfg.max_payload_size = 1;
     ASSERT_EQ(ipc_start_all_actors(), 0);
 
-    EvtA_payload_t payload = {.v = 1};
-    EXPECT_EQ(ipc_publish_isr_raw(nullptr, &payload), -EINVAL);
-    EXPECT_EQ(ipc_publish_isr_raw(&MsgA, &payload), -EINVAL);
+    MsgA_payload_t payload = {.x = 1};
+    EXPECT_EQ(ipc_send_to_raw(nullptr, &MsgA, &payload), -EINVAL);
+    EXPECT_EQ(ipc_send_to_raw(&small, nullptr, &payload), -EINVAL);
+    EXPECT_EQ(ipc_send_to_raw(&small, &MsgA, &payload), -EMSGSIZE);
+}
+
+TEST_F(SendTest, SendToRequiresStartedActorsAndInitializedDescriptor)
+{
+    struct ipc_actor direct            = {};
+    direct.name                        = "direct";
+    direct.cfg.max_payload_size        = 512;
+
+    static ipc_msg_desc_t UntouchedCmd = {
+        .id   = 0,
+        .kind = IPC_CMD,
+        .size = sizeof(MsgA_payload_t),
+        .name = "UntouchedCmd",
+    };
+
+    MsgA_payload_t payload = {.x = 7};
+    EXPECT_EQ(ipc_send_to_raw(&direct, &MsgA, &payload), -EPERM);
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(ipc_send_to_raw(&direct, &UntouchedCmd, &payload), -EINVAL);
+    EXPECT_EQ(UntouchedCmd.id, 0u);
+}
+
+TEST_F(SendTest, SendToUsesDirectIsrSafeSendSeam)
+{
+    struct ipc_actor direct     = {};
+    direct.name                 = "direct";
+    direct.cfg.max_payload_size = 512;
+    ASSERT_NE(MsgA.id, 0u);
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+
+    MsgA_payload_t payload = {.x = 88};
+    ASSERT_EQ(ipc_send_to_raw(&direct, &MsgA, &payload), 0);
+
+    auto *st = mock_port_actor_state(&direct);
+    EXPECT_EQ(st->send_isr_count, 1);
+    EXPECT_EQ(st->send_count, 1);
+    EXPECT_EQ(st->last_send_msg.id, MsgA.id);
+    EXPECT_EQ(st->last_send_msg.kind, IPC_CMD);
+    EXPECT_EQ(st->last_send_msg.payload[0], 88);
 }
 
 TEST_F(SendTest, SendPropagatesPortError)
@@ -870,7 +991,7 @@ TEST_F(SendTest, PublishWithMixedSubscriberOutcomesReturnsLastError)
 TEST_F(SendTest, PublishEmptyPayloadSucceeds)
 {
     /* desc->size == 0 event. */
-    IPC_EVENT_DEFINE(EmptyEvt, {});
+    IPC_EVENT_DEFINE_LOCAL(EmptyEvt, {});
     EXPECT_EQ(ipc_publish_raw(&EmptyEvt, NULL), 0);
 }
 

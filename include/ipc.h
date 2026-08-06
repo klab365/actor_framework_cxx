@@ -15,17 +15,6 @@
 extern "C" {
 #endif
 
-/* ── Configuration ─────────────────────────────────────────────────────── */
-
-/**
- * @def IPC_PAYLOAD_SIZE
- * @brief Default actor queue payload capacity, in bytes.
- *
- * Compatibility fallback used by legacy code that does not explicitly size an
- * actor queue. New actor declarations should pass an explicit per-actor max
- * payload size, often with IPC_MESSAGE_MAX(...).
- */
-
 /* ── Message kinds ──────────────────────────────────────────────────────── */
 
 /** @brief Message delivery kind. */
@@ -93,9 +82,11 @@ typedef struct {
 /**
  * @brief Runtime descriptor for a statically declared message type.
  *
- * Message descriptors are created by IPC_CMD_DEFINE() and IPC_EVENT_DEFINE().
- * The descriptor is intentionally not const: `.id` starts at 0 and is filled
- * lazily from `.name` on first registration or send.
+ * Message descriptors are created locally by IPC_CMD_DEFINE_LOCAL() /
+ * IPC_EVENT_DEFINE_LOCAL(), or declared in headers with IPC_CMD_DECLARE() /
+ * IPC_EVENT_DECLARE() and defined once with IPC_CMD_DEFINE(TypeName) /
+ * IPC_EVENT_DEFINE(TypeName). The descriptor is intentionally not const: `.id`
+ * starts at 0 and is filled lazily from `.name` on first registration or send.
  */
 typedef struct {
     /** Lazily computed message ID; 0 until first use. */
@@ -250,11 +241,18 @@ struct ipc_actor {
 
 /**
  * @def IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
- * @brief Statically declare an actor for the active platform port.
+ * @brief Define a file-local actor for the active platform port.
  *
- * The active port supplies this macro. It creates the actor object and any
+ * The active port supplies this macro. It creates a static actor object and any
  * required static port resources, then registers the actor for
  * ipc_start_all_actors().
+ *
+ * @def IPC_ACTOR_DEFINE_PUBLIC(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
+ * @brief Define an externally-linkable actor for the active platform port.
+ *
+ * Use this variant when other translation units intentionally need a direct
+ * actor handle, for example with ipc_send_to(). Those files may declare
+ * `extern struct ipc_actor actor_sym`.
  */
 
 /**
@@ -288,16 +286,17 @@ struct ipc_actor {
 /* ── Message definition macros ──────────────────────────────────────────── */
 
 /**
- * @def IPC_CMD_DEFINE(TypeName, fields)
- * @brief Define a command message type and its payload structure.
+ * @def IPC_CMD_DEFINE_LOCAL(TypeName, fields)
+ * @brief Define a command message type, payload type, and file-local descriptor.
  *
  * Creates `<TypeName>_payload_t` from @p fields and a static ipc_msg_desc_t
- * named @p TypeName. The payload must fit the max payload size of every actor that handles this message.
+ * named @p TypeName. This form is suitable for messages used in one translation
+ * unit.
  *
  * @param TypeName Message descriptor symbol and payload type prefix.
  * @param fields Struct body, for example `{ uint32_t value; }`.
  */
-#define IPC_CMD_DEFINE(TypeName, ...)                          \
+#define IPC_CMD_DEFINE_LOCAL(TypeName, ...)                    \
     typedef struct __VA_ARGS__ TypeName##_payload_t;           \
     static ipc_msg_desc_t TypeName __attribute__((unused)) = { \
         .id   = 0,                                             \
@@ -307,16 +306,39 @@ struct ipc_actor {
     }
 
 /**
- * @def IPC_EVENT_DEFINE(TypeName, fields)
- * @brief Define an event message type and its payload structure.
+ * @def IPC_CMD_DEFINE(TypeName)
+ * @brief Define the extern command descriptor declared by IPC_CMD_DECLARE().
+ */
+#define IPC_CMD_DEFINE(TypeName)              \
+    ipc_msg_desc_t TypeName = {               \
+        .id   = 0,                            \
+        .kind = IPC_CMD,                      \
+        .size = sizeof(TypeName##_payload_t), \
+        .name = #TypeName,                    \
+    }
+
+/**
+ * @def IPC_CMD_DECLARE(TypeName, fields)
+ * @brief Declare a command payload type and extern descriptor in a header.
+ *
+ * Pair with IPC_CMD_DEFINE(TypeName) in exactly one source file.
+ */
+#define IPC_CMD_DECLARE(TypeName, ...)               \
+    typedef struct __VA_ARGS__ TypeName##_payload_t; \
+    extern ipc_msg_desc_t TypeName
+
+/**
+ * @def IPC_EVENT_DEFINE_LOCAL(TypeName, fields)
+ * @brief Define an event message type, payload type, and file-local descriptor.
  *
  * Creates `<TypeName>_payload_t` from @p fields and a static ipc_msg_desc_t
- * named @p TypeName. The payload must fit the max payload size of every actor that handles this message.
+ * named @p TypeName. This form is suitable for messages used in one translation
+ * unit.
  *
  * @param TypeName Message descriptor symbol and payload type prefix.
  * @param fields Struct body, for example `{ uint32_t value; }`.
  */
-#define IPC_EVENT_DEFINE(TypeName, ...)                        \
+#define IPC_EVENT_DEFINE_LOCAL(TypeName, ...)                  \
     typedef struct __VA_ARGS__ TypeName##_payload_t;           \
     static ipc_msg_desc_t TypeName __attribute__((unused)) = { \
         .id   = 0,                                             \
@@ -326,11 +348,33 @@ struct ipc_actor {
     }
 
 /**
+ * @def IPC_EVENT_DEFINE(TypeName)
+ * @brief Define the extern event descriptor declared by IPC_EVENT_DECLARE().
+ */
+#define IPC_EVENT_DEFINE(TypeName)            \
+    ipc_msg_desc_t TypeName = {               \
+        .id   = 0,                            \
+        .kind = IPC_EVENT,                    \
+        .size = sizeof(TypeName##_payload_t), \
+        .name = #TypeName,                    \
+    }
+
+/**
+ * @def IPC_EVENT_DECLARE(TypeName, fields)
+ * @brief Declare an event payload type and extern descriptor in a header.
+ *
+ * Pair with IPC_EVENT_DEFINE(TypeName) in exactly one source file.
+ */
+#define IPC_EVENT_DECLARE(TypeName, ...)             \
+    typedef struct __VA_ARGS__ TypeName##_payload_t; \
+    extern ipc_msg_desc_t TypeName
+
+/**
  * @def IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)
  * @brief Define the reply payload type associated with an askable command.
  */
 #define IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, ...) \
-    IPC_CMD_DEFINE(ReplyType, __VA_ARGS__);               \
+    IPC_CMD_DEFINE_LOCAL(ReplyType, __VA_ARGS__);         \
     static ipc_msg_desc_t *RequestType##_reply_desc __attribute__((unused)) = &(ReplyType)
 
 /* ── Handler dispatch ───────────────────────────────────────────────────── */
@@ -380,24 +424,27 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
 #define ipc_publish(MsgType, payload) ipc_publish_raw(&(MsgType), &(payload))
 
 /**
- * @def IPC_ISR_PUBLISH(MsgType, payload)
- * @brief Interrupt-context-safe event publish.
+ * @def ipc_send_to(actor, MsgType, payload)
+ * @brief Directly enqueue a typed message to @p actor, bypassing route lookup.
  *
- * Valid only after ipc_start_all_actors() and only for event descriptors that
- * already have static handlers registered.
+ * This is the O(1) direct-mailbox path and is safe for interrupt context when
+ * the active port's direct send seam is ISR-safe. Valid only after
+ * ipc_start_all_actors(). The descriptor ID must already be initialized, normally
+ * by IPC_ACTOR_HANDLE() during static startup.
  *
- * @param MsgType Event descriptor created with IPC_EVENT_DEFINE().
+ * @param actor Pointer to the target actor.
+ * @param MsgType Message descriptor created with IPC_CMD_DEFINE() or IPC_EVENT_DEFINE().
  * @param payload Expression of type `<MsgType>_payload_t`.
  * @return 0 on success, or a negative errno-style value on failure.
  */
-#define IPC_ISR_PUBLISH(MsgType, payload) ipc_publish_isr_raw(&(MsgType), &(payload))
+#define ipc_send_to(actor, MsgType, payload) ipc_send_to_raw((actor), &(MsgType), &(payload))
 
 /**
- * @def ipc_publish_isr(MsgType, payload)
- * @brief Alias for IPC_ISR_PUBLISH().
+ * @note ipc_publish() fans out by scanning subscriptions and enqueueing to each
+ * subscriber, so it is not intended for interrupt context. For ISR-originated
+ * work, use ipc_send_to() to post O(1) to a driver/local actor, then call
+ * ipc_publish() from that actor's thread context if fan-out is needed.
  */
-#define ipc_publish_isr(MsgType, payload) IPC_ISR_PUBLISH(MsgType, payload)
-
 /**
  * @def ipc_ask(self, ReqType, callback)
  * @brief Asynchronously send an empty ask request and invoke @p callback on reply.
@@ -475,18 +522,24 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
 
 /**
- * @brief Interrupt-context-safe raw event publish.
+ * @brief Directly enqueue a raw message to an actor, bypassing route lookup.
  *
- * Uses the active port's ISR-safe send seam. The descriptor must already have a
- * non-zero ID, which normally means the event has been registered by a static
- * IPC_ACTOR_HANDLE() before startup completed.
+ * This is the O(1) direct-mailbox path and may be used from interrupt context
+ * when the active port's direct send seam is ISR-safe. The descriptor must
+ * already have a non-zero ID; this function does not lazily initialize
+ * descriptors.
  *
- * @param desc Event descriptor. Its kind must be IPC_EVENT.
+ * Most application code should prefer ipc_send() / ipc_publish() unless it
+ * intentionally needs a direct actor handle.
+ *
+ * @param actor Target actor.
+ * @param desc Message descriptor. Its kind and ID are preserved in the queued message.
  * @param payload Pointer to payload bytes, or NULL for an empty payload.
- * @return 0 on success, -EINVAL for invalid descriptors, -EPERM before actor
- *         startup, or a negative errno-style value from the active port.
+ * @return 0 on success, -EINVAL for invalid arguments or uninitialized descriptor
+ *         IDs, -EPERM before actor startup, -EMSGSIZE if the payload does not fit
+ *         @p actor, or a negative errno-style value from the port.
  */
-int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload);
+int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const void *payload);
 
 /**
  * @brief Asynchronously send a request and register a callback for its reply.

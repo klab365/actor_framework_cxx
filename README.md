@@ -1,26 +1,47 @@
 # IPC Actor Framework
 
-A small **actor-model IPC framework** written in **C11** (with a **C++17**
-test suite). Each actor owns its own thread and message inbox. Actors register
-typed handlers with `IPC_ACTOR_HANDLE`; commands are routed by message ID, so
-callers do not need direct actor references. The core is platform-agnostic —
-POSIX (pthreads) and Zephyr (`k_msgq` / `k_thread`) live behind a single port
-seam.
+A small **actor-model IPC framework** written in **C11** (with a **C++17** test suite).
 
-- One public header: `<ipc.h>`.
-- No `extern struct ipc_actor` anywhere. Cross-actor sends use typed
-  message descriptors looked up by ID.
-- No linker scripts, no central registry file. Actors are discovered by
+Each actor owns its own thread and its own message inbox. Actors register typed
+handlers by message type; the framework routes commands and events by message
+ID, so callers never need a direct reference to the actor they're talking to.
+The core is platform-agnostic: POSIX (pthreads) and Zephyr (`k_msgq` /
+`k_thread`) both sit behind a single port interface.
+
+**Design principles:**
+- 📄 One public header: `<ipc.h>` — that's the entire API surface.
+- 🔒 No `extern struct ipc_actor` anywhere — cross-actor sends use typed message
+  descriptors looked up by ID, not raw actor pointers.
+- 🔍 No linker scripts, no central registry file — actors are discovered by
   name at runtime via a linked list.
-- No heap allocation in the core.
+- 🚫 No heap allocation in the core.
+
+---
+
+## Table of contents
+
+- [Repository layout](#repository-layout)
+- [Quick start](#quick-start)
+  1. [Define a message type](#1-define-a-message-type)
+  2. [Define an actor and its typed handlers](#2-define-an-actor-and-its-typed-handlers)
+  3. [Optional actor hooks and supervision](#3-optional-actor-hooks-and-supervision)
+  4. [Send messages (no `extern` needed)](#4-send-messages-no-extern-needed)
+  5. [Run the framework](#5-run-the-framework)
+- [Configuration](#configuration)
+- [Building](#building)
+  - [Zephyr](#zephyr)
+- [Distribution / consumption paths](#distribution--consumption-paths)
+- [Design notes](#design-notes)
+- [For contributors and AI coding agents](#for-contributors-and-ai-coding-agents)
+
+---
 
 ## Repository layout
 
 ```
 ipc/
 ├── include/
-│   ├── ipc.h              ← ONLY public header (whole API surface)
-│   └── ipc_defaults.h     ← IPC_PAYLOAD_SIZE default; tunable per-TU or via -D
+│   └── ipc.h              ← ONLY public header (whole API surface)
 ├── src/
 │   ├── ipc.c              ← platform-agnostic core
 │   ├── ipc_internal.h     ← private: FNV-1a, test reset hook
@@ -29,8 +50,7 @@ ipc/
 │       ├── posix/posix_ipc_port.c
 │       └── zephyr/
 │           ├── zephyr_ipc_port.c
-│           ├── ipc_defaults.h   ← Zephyr defaults wrapper
-│           ├── ipc_config.h     ← Zephyr Kconfig → IPC_* sizing macros
+│           ├── ipc_config.h     ← Zephyr port config shim
 │           └── Kconfig
 ├── tests/
 │   ├── unit/              ← gtest; links ipc.c + mock_ipc_port (no threads)
@@ -47,6 +67,8 @@ ipc/
 └── AGENTS.md              ← contributor / agent guidance
 ```
 
+---
+
 ## Quick start
 
 ### 1. Define a message type
@@ -54,20 +76,54 @@ ipc/
 ```c
 #include <ipc.h>
 
-IPC_CMD_DEFINE(LedOn, { uint8_t brightness; });
+IPC_CMD_DEFINE_LOCAL(LedOn, { uint8_t brightness; });
 ```
 
-`IPC_CMD_DEFINE` declares a `LedOn` message descriptor (with lazy
-FNV-1a-hashed `.id`, set on first register/send) and a
-`LedOn_payload_t` typedef for the wire payload. A `static_assert`
-checks that `sizeof(LedOn_payload_t) <= IPC_PAYLOAD_SIZE` at compile
-time.
-
-The same pattern works for events. Async request/response is modeled as an askable
-command plus an associated command reply:
+`IPC_CMD_DEFINE_LOCAL(LedOn, fields)` declares an `LedOn_payload_t` typedef for
+wire payloads, plus a file-local `LedOn` message descriptor (its `.id` is
+lazily FNV-1a-hashed during handler registration, or on first normal send).
+Use this two-argument form for messages that are only used within one
+translation unit:
 
 ```c
-IPC_CMD_DEFINE(GetLedStateRequest, { uint8_t channel; });
+/* button_actor.c */
+IPC_CMD_DEFINE_LOCAL(ButtonIrq, { uint8_t pin; });
+
+IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 8, IPC_MESSAGE_MAX(ButtonIrq));
+
+IPC_ACTOR_HANDLE(button_actor, ButtonIrq, on_button_irq)
+{
+    /* ButtonIrq.id has been initialized by handler registration. */
+}
+
+void gpio_isr_callback(void)
+{
+    ButtonIrq_payload_t payload = {.pin = 3};
+    ipc_send_to(&button_actor, ButtonIrq, payload); /* O(1) direct post */
+}
+```
+
+For messages shared across multiple files, put `DECLARE` in a header and the
+one-argument `DEFINE` in exactly one source file:
+
+```c
+/* messages.h */
+IPC_CMD_DECLARE(LedOn, { uint8_t brightness; });
+IPC_EVENT_DECLARE(LedFault, { uint32_t error_code; uint8_t channel; });
+
+/* messages.c */
+IPC_CMD_DEFINE(LedOn);
+IPC_EVENT_DEFINE(LedFault);
+```
+
+Every other file includes `messages.h` and uses the same `extern` descriptor
+object. The same pattern applies to events.
+
+Async request/response is modeled as an askable command plus an associated
+command reply:
+
+```c
+IPC_CMD_DEFINE_LOCAL(GetLedStateRequest, { uint8_t channel; });
 IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
     uint8_t channel;
     uint8_t on;
@@ -75,10 +131,10 @@ IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
     uint32_t on_time_ms;
 });
 
-IPC_EVENT_DEFINE(LedFault, { uint32_t error_code; uint8_t channel; });
+IPC_EVENT_DEFINE_LOCAL(LedFault, { uint32_t error_code; uint8_t channel; });
 ```
 
-`IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)` defines the reply command
+`IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)` defines the reply
 payload and associates it with the request type for `ipc_ask()` / `ipc_reply()`.
 
 ### 2. Define an actor and its typed handlers
@@ -126,17 +182,25 @@ IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on) {
 }
 ```
 
-`IPC_SUPERVISE_STOP` requests the actor to stop. `IPC_SUPERVISE_RESTART`
-performs a soft restart for message-driven actors: pending delayed work and
-queued messages are dropped, then stop/start hooks are run so actor state can
-be reset.
+| Supervision mode        | Behavior on failure                                                                 |
+|--------------------------|--------------------------------------------------------------------------------------|
+| `IPC_SUPERVISE_NONE`     | Default — failure is reported via the fail hook only; the actor keeps running.       |
+| `IPC_SUPERVISE_STOP`     | Requests the actor to stop.                                                          |
+| `IPC_SUPERVISE_RESTART`  | Soft restart for message-driven actors: pending delayed work and queued messages are dropped, then stop/start hooks run so state can be reset. |
 
 ### 4. Send messages (no `extern` needed)
 
+| Pattern                      | Targets                          | Use it for                                        |
+|-------------------------------|-----------------------------------|----------------------------------------------------|
+| `ipc_send` / `ipc_send_to`     | Exactly one actor (the registered command handler) | "Tell this actor to do something."       |
+| `ipc_publish`                  | Every subscribed actor (fan-out)  | "Announce something happened."                     |
+| `ipc_ask` / `ipc_ask_with`     | One actor, with a correlated async reply | "Ask an actor for a typed response."         |
+| `ipc_send_after`               | One actor, after a delay          | "Do this later" (one pending slot per actor).       |
+
 #### Command: tell one actor to do something
 
-Commands are routed to exactly one actor: the actor that registered a handler
-for that command type.
+Commands are routed to exactly one actor: whichever actor registered a
+handler for that command type.
 
 ```c
 ipc_send(LedOn, (LedOn_payload_t){.brightness = 200});
@@ -145,7 +209,7 @@ ipc_send(LedOn, (LedOn_payload_t){.brightness = 200});
 #### Event: announce something to all subscribers
 
 Events are published to every actor that registered a handler for that event
-type. Publishing succeeds even when there are no subscribers.
+type. Publishing still succeeds if there are no subscribers.
 
 ```c
 ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
@@ -153,8 +217,8 @@ ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
 
 #### Ask/reply: ask one actor for a typed async response
 
-Ask/reply sends a command request to one actor and correlates the reply back to
-the asking actor. The response callback runs in the asking actor's context.
+Ask/reply sends a command request to one actor and correlates the reply back
+to the asking actor. The response callback runs in the asking actor's context.
 
 ```c
 IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
@@ -187,8 +251,9 @@ ipc_ask_cancel(&app_actor, ask_id);
 
 #### Delayed command: send a command later
 
-Delayed sends target the same single registered command receiver. Each actor has
-one pending delayed slot; a newer `ipc_send_after()` replaces the previous one.
+Delayed sends target the same single registered command receiver. Each actor
+has one pending delayed slot; a newer `ipc_send_after()` call replaces the
+previous one. Explicit cancellation of a delayed send is not supported.
 
 ```c
 ipc_send_after(LedOn, 500, (LedOn_payload_t){.brightness = 200});
@@ -196,7 +261,7 @@ ipc_send_after(LedOn, 500, (LedOn_payload_t){.brightness = 200});
 
 ### 5. Run the framework
 
-POSIX (host / Linux / macOS):
+**POSIX (host / Linux / macOS):**
 
 ```c
 int main(void) {
@@ -211,50 +276,43 @@ int main(void) {
 }
 ```
 
-Zephyr: actor `*_init` functions are called via `SYS_INIT(...,
-APPLICATION, 85)`. After routes are registered, call
-`ipc_start_all_actors()` to spawn each statically declared actor's
-`k_thread` (via the Zephyr port's `ipc_port_actor_init` hook). The
-sample's
-[`examples/basic_zephyr/`](examples/basic_zephyr/) is structured this
-way; its `main.c` only prints a banner while the actor is initialized
-from `SYS_INIT`.
+**Zephyr:** actor `*_init` functions are called via `SYS_INIT(...,
+APPLICATION, 85)`. After routes are registered, call `ipc_start_all_actors()`
+to spawn each statically declared actor's `k_thread` (via the Zephyr port's
+`ipc_port_actor_init` hook). The sample at
+[`examples/basic_zephyr/`](examples/basic_zephyr/) is structured this way —
+its `main.c` only prints a banner, since the actor is initialized from
+`SYS_INIT`.
 
-See `examples/led_actor/main.c` for a complete POSIX runnable.
+See [`examples/led_actor/main.c`](examples/led_actor/main.c) for a complete
+POSIX runnable.
+
+---
 
 ## Configuration
 
-The only public compile-time sizing knob is defined in
-[`include/ipc_defaults.h`](include/ipc_defaults.h):
+Actor stack, queue depth, payload capacity, and port runtime state are declared
+per actor with `IPC_ACTOR_DEFINE()`. Registry capacities are fixed
+implementation details, not user configuration.
 
-| Macro              | Default | What it sizes              |
-|--------------------|---------|----------------------------|
-| `IPC_PAYLOAD_SIZE` | 32      | wire message payload bytes |
+Use `IPC_MESSAGE_MAX(...)` to size each actor queue for exactly the messages it
+receives, for example:
 
-Actor stack, queue storage, and port runtime state are declared per actor
-with `IPC_ACTOR_DEFINE()`. Registry capacities are fixed implementation
-details, not user configuration.
+```c
+IPC_ACTOR_DEFINE(app_actor, "app", 2048, 0, 8,
+                 IPC_MESSAGE_MAX(AppStart, AppStop, LedFault));
+```
 
-Override precedence (highest wins):
+The generated `IPC_ACTOR_HANDLE()` adapters `static_assert` that each handled
+message payload fits that actor's `max_payload` value. Oversized payloads fail
+the build instead of failing at runtime.
 
-1. Define `IPC_PAYLOAD_SIZE` **before** `#include <ipc.h>` in a single TU.
-2. Pass `-DIPC_PAYLOAD_SIZE=64` to the compiler.
-3. On Zephyr, set `CONFIG_ACTOR_PAYLOAD_SIZE` in Kconfig. The port's
-   overlay at `src/port/zephyr/ipc_config.h` translates it into
-   `IPC_PAYLOAD_SIZE` before the public default is consulted.
-
-Per-actor port runtime state is emitted by the active port's
-`IPC_ACTOR_DEFINE()` implementation, so there is no separate public sizing
-knob for port-state storage.
-
-Every `IPC_*_DEFINE` macro `static_assert`s that its payload fits
-`IPC_PAYLOAD_SIZE` at compile time, so an oversized payload fails the
-build, not at runtime.
+---
 
 ## Building
 
-This repo uses [`mise`](https://mise.jdx.dev) for toolchain pinning.
-With `mise trust` accepted once, the available tasks are:
+This repo uses [`mise`](https://mise.jdx.dev) for toolchain pinning. Once
+you've accepted `mise trust`, the available tasks are:
 
 ```bash
 mise run configure           # cmake --preset debug
@@ -275,7 +333,7 @@ ctest --preset debug
 
 Build options (see top-level `CMakeLists.txt`):
 
-| Option                 | Default | Effect                                              |
+| Option                | Default | Effect                                             |
 |------------------------|---------|-----------------------------------------------------|
 | `IPC_BUILD_TESTS`      | OFF     | unit tests (gtest, FetchContent-pinned v1.15.2)     |
 | `IPC_BUILD_EXAMPLES`   | OFF     | `led_actor_example` binary                          |
@@ -292,18 +350,17 @@ Inside a Zephyr app, drop this repo in as the `ipc` module (or use
 CONFIG_ACTOR=y
 ```
 
-Tune inline message payload size via `CONFIG_ACTOR_PAYLOAD_SIZE`
-(see `src/port/zephyr/Kconfig`). Actor stack and queue storage are
-specified per actor with `IPC_ACTOR_DEFINE()`.
+Actor stack, queue storage, and payload capacity are specified per actor with
+`IPC_ACTOR_DEFINE()`.
 
 The repo ships a runnable Zephyr sample app at
-[`examples/basic_zephyr/`](examples/basic_zephyr/) that links this
-framework as a Zephyr module. It defines ping and pong actors, registers
-`BasicPing`/`BasicPong` commands, sends the initial command from
-`SYS_INIT`, and then re-arms itself with `ipc_send_after()` a few times.
-Before exiting, `main()` also sends `BasicStatusRequest`; the pong actor
-answers with `BasicStatusResponse` containing the current ping/pong counters. The sample has
-its own `west.yml`, so it can create a local Zephyr workspace under
+[`examples/basic_zephyr/`](examples/basic_zephyr/) that links this framework
+as a Zephyr module. It defines ping and pong actors, registers
+`BasicPing`/`BasicPong` commands, sends the initial command from `SYS_INIT`,
+and then re-arms itself with `ipc_send_after()` a few times. Before exiting,
+`main()` also sends `BasicStatusRequest`; the pong actor answers with
+`BasicStatusResponse` containing the current ping/pong counters. The sample
+has its own `west.yml`, so it can create a local Zephyr workspace under
 `examples/` directly from this checkout:
 
 ```bash
@@ -314,52 +371,70 @@ mise exec -- west build -b native_sim basic_zephyr -d basic_zephyr/build -p alwa
 mise exec -- west build -t run -d basic_zephyr/build
 ```
 
+---
+
 ## Distribution / consumption paths
 
 This repo is designed to be consumed in three ways:
 
-1. **Zephyr module** — the `zephyr/module.yml` declares
-   `build.cmake: zephyr` and `build.kconfig: zephyr/Kconfig`. Mount
-   the repo at `modules/ipc/` in a Zephyr workspace or list it in
-   `ZEPHYR_EXTRA_MODULES` and west picks it up automatically. The
-   app include path gets both `src/port/zephyr/` and `include/`, so
-   `<ipc.h>` can include the Kconfig-aware `ipc_config.h` and all
-   translation units agree on the same `IPC_*` sizing values.
-2. **CMake `add_subdirectory` / `FetchContent`** — `target_link_libraries(my_app PRIVATE ipc)`
-   gives you the public include dir transitively. The default platform
-   is POSIX; the Zephyr port is only compiled when `IPC_PLATFORM=zephyr`.
-3. **`find_package(ipc)`** (future) — install with `cmake --install`.
+1. **Zephyr module** — `zephyr/module.yml` declares `build.cmake: zephyr` and
+   `build.kconfig: zephyr/Kconfig`. Mount the repo at `modules/ipc/` in a
+   Zephyr workspace, or list it in `ZEPHYR_EXTRA_MODULES`, and west picks it
+   up automatically. The app include path gets both `src/port/zephyr/` and
+   `include/`, so `<ipc.h>` can include the Kconfig-aware `ipc_config.h` and
+   all translation units agree on the same `IPC_*` sizing values.
+2. **CMake `add_subdirectory` / `FetchContent`** —
+   `target_link_libraries(my_app PRIVATE ipc)` gives you the public include
+   dir transitively. The default platform is POSIX; the Zephyr port is only
+   compiled when `IPC_PLATFORM=zephyr`.
+3. **`find_package(ipc)`** *(future)* — install with `cmake --install`.
 
-The public surface is intentionally one header (`<ipc.h>`) plus the
-sizing defaults (`<ipc_defaults.h>`, included by `<ipc.h>`). Anything
-under `src/` is implementation detail and not exported to consumers.
+The public surface is intentionally one header (`<ipc.h>`). Anything under
+`src/` is an implementation detail and is not exported to consumers.
+
+---
 
 ## Design notes
 
 - **No linker scripts** — the registry is a simple linked list built by
   port-specific static actor startup hooks (POSIX constructors, Zephyr
   `SYS_INIT`) and walked by name lookup.
-- **No `extern struct ipc_actor`** — `ipc_send` and `ipc_publish` route
-  via the message ID; consumers never need a reference to the target actor.
-- **Lazy ID init** — message descriptor `.id` is FNV-1a-hashed from
-  `.name` when static actor handler tables are registered, or on first send
-  for unregistered descriptors. Route registration happens during startup
-  before `ipc_start_all_actors()` starts actor threads.
-- **One delayed message per actor** — `ipc_send_after` replaces the
-  previous pending delayed msg. The current implementation uses a
-  per-actor delay primitive (POSIX: one helper `pthread` per actor;
-  Zephyr: one `k_work_delayable` per actor). See
-  [`docs/timer_wheel.md`](docs/timer_wheel.md) for the full layout
-  and the contract that surrounds it. Explicit cancellation is not
-  supported.
+- **Actor handles are explicit** — `IPC_ACTOR_DEFINE()` keeps actors
+  file-local. Use `IPC_ACTOR_DEFINE_PUBLIC()` only when other translation
+  units intentionally need `extern struct ipc_actor actor_sym`, e.g. for O(1)
+  `ipc_send_to()`.
+- **Message descriptors** — use `IPC_CMD_DECLARE()` / `IPC_EVENT_DECLARE()`
+  in headers and one-argument `IPC_CMD_DEFINE()` / `IPC_EVENT_DEFINE()` in
+  one source file when a message is shared across translation units.
+  `IPC_CMD_DEFINE_LOCAL(Type, fields)` / `IPC_EVENT_DEFINE_LOCAL(Type, fields)`
+  creates a file-local descriptor for local-only messages.
+- **Lazy ID init** — a message descriptor's `.id` is FNV-1a-hashed from
+  `.name` when static actor handler tables are registered, or on first
+  normal routed send for unregistered descriptors. Route registration
+  happens during startup, before `ipc_start_all_actors()` starts actor
+  threads. `ipc_send_to()` requires the ID to already be initialized —
+  typically by `IPC_ACTOR_HANDLE()`.
+- **One delayed message per actor** — `ipc_send_after` replaces the previous
+  pending delayed message. The current implementation uses a per-actor delay
+  primitive (POSIX: one helper `pthread` per actor; Zephyr: one
+  `k_work_delayable` per actor). See [`docs/timer_wheel.md`](docs/timer_wheel.md)
+  for the full layout and the contract around it. Explicit cancellation is
+  not supported.
 - **Port seam** — `struct ipc_actor::port` is an opaque pointer to
   platform-specific state emitted by the active port's `IPC_ACTOR_DEFINE()`
   implementation. New ports must implement the full `src/ipc_port.h`
   interface and provide their own per-actor state storage.
-- **Interrupt-context publish** — use `IPC_ISR_PUBLISH(EventType, payload)`
-  only after `ipc_start_all_actors()` succeeds. The event descriptor must
-  already be bound with `IPC_ACTOR_HANDLE`, and the active port's
-  `ipc_port_send_isr()` must be safe for its interrupt context.
+- **Interrupt-context work** — don't publish from ISR context: `ipc_publish`
+  is a fan-out operation that scans subscriptions and may enqueue to many
+  actors. Use `ipc_send_to(&actor, MsgType, payload)` to post O(1) to a
+  driver/local actor after `ipc_start_all_actors()` succeeds, then call
+  `ipc_publish()` from that actor's thread context if fan-out is needed.
 
-See `AGENTS.md` for contributor-facing guidance, including the
-"adding a new message kind" and "adding a new port" checklists.
+---
+
+## For contributors and AI coding agents
+
+See [`AGENTS.md`](AGENTS.md) for contributor-facing guidance, including the
+"adding a new message kind" and "adding a new port" checklists. If you're an
+AI agent working in this repo, start there — it documents the conventions
+this README only summarizes.
