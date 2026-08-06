@@ -10,7 +10,7 @@ IPC_CMD_DEFINE_LOCAL(BasicPing, { uint32_t count; });
 IPC_CMD_DEFINE_LOCAL(BasicPong, { uint32_t count; });
 IPC_CMD_DEFINE_LOCAL(BasicFault, { uint32_t code; });
 IPC_CMD_DEFINE_LOCAL(BasicStatusRequest, { uint32_t request_id; });
-IPC_CMD_REPLY_DEFINE(BasicStatusRequest, BasicStatusResponse, {
+IPC_CMD_REPLY_DEFINE_LOCAL(BasicStatusRequest, BasicStatusResponse, {
     uint32_t request_id;
     uint32_t ping_count;
     uint32_t pong_count;

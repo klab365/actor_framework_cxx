@@ -6,6 +6,9 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+IPC_CMD_DEFINE(GetLedStateRequest);
+IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse);
+
 /* ── Blink state ─────────────────────────────────────────────────────────── */
 
 static int g_blink_remaining = 0;

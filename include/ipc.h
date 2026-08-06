@@ -370,12 +370,32 @@ struct ipc_actor {
     extern ipc_msg_desc_t TypeName
 
 /**
- * @def IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)
- * @brief Define the reply payload type associated with an askable command.
+ * @def IPC_CMD_REPLY_DEFINE_LOCAL(RequestType, ReplyType, fields)
+ * @brief Define a file-local reply payload and descriptor for an askable command.
  */
-#define IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, ...) \
-    IPC_CMD_DEFINE_LOCAL(ReplyType, __VA_ARGS__);         \
+#define IPC_CMD_REPLY_DEFINE_LOCAL(RequestType, ReplyType, ...) \
+    IPC_CMD_DEFINE_LOCAL(ReplyType, __VA_ARGS__);               \
     static ipc_msg_desc_t *RequestType##_reply_desc __attribute__((unused)) = &(ReplyType)
+
+/**
+ * @def IPC_CMD_REPLY_DECLARE(RequestType, ReplyType, fields)
+ * @brief Declare a shared reply payload and descriptor for an askable command.
+ *
+ * Pair with IPC_CMD_REPLY_DEFINE(RequestType, ReplyType) in exactly one source
+ * file.
+ */
+#define IPC_CMD_REPLY_DECLARE(RequestType, ReplyType, ...) \
+    typedef struct __VA_ARGS__ ReplyType##_payload_t;      \
+    extern ipc_msg_desc_t ReplyType;                       \
+    extern ipc_msg_desc_t *RequestType##_reply_desc
+
+/**
+ * @def IPC_CMD_REPLY_DEFINE(RequestType, ReplyType)
+ * @brief Define the extern reply descriptor declared by IPC_CMD_REPLY_DECLARE().
+ */
+#define IPC_CMD_REPLY_DEFINE(RequestType, ReplyType) \
+    IPC_CMD_DEFINE(ReplyType);                       \
+    ipc_msg_desc_t *RequestType##_reply_desc = &(ReplyType)
 
 /* ── Handler dispatch ───────────────────────────────────────────────────── */
 

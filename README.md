@@ -10,8 +10,9 @@ The core is platform-agnostic: POSIX (pthreads) and Zephyr (`k_msgq` /
 
 **Design principles:**
 - 📄 One public header: `<ipc.h>` — that's the entire API surface.
-- 🔒 No `extern struct ipc_actor` anywhere — cross-actor sends use typed message
-  descriptors looked up by ID, not raw actor pointers.
+- 🔒 No `extern struct ipc_actor` required for normal cross-actor sends — routed
+  sends use typed message descriptors looked up by ID. Direct actor handles are
+  an explicit opt-in for O(1) local/ISR-style sends.
 - 🔍 No linker scripts, no central registry file — actors are discovered by
   name at runtime via a linked list.
 - 🚫 No heap allocation in the core.
@@ -25,7 +26,7 @@ The core is platform-agnostic: POSIX (pthreads) and Zephyr (`k_msgq` /
   1. [Define a message type](#1-define-a-message-type)
   2. [Define an actor and its typed handlers](#2-define-an-actor-and-its-typed-handlers)
   3. [Optional actor hooks and supervision](#3-optional-actor-hooks-and-supervision)
-  4. [Send messages (no `extern` needed)](#4-send-messages-no-extern-needed)
+  4. [Send messages (`extern` usually not needed)](#4-send-messages-extern-usually-not-needed)
   5. [Run the framework](#5-run-the-framework)
 - [Configuration](#configuration)
 - [Building](#building)
@@ -117,14 +118,14 @@ IPC_EVENT_DEFINE(LedFault);
 ```
 
 Every other file includes `messages.h` and uses the same `extern` descriptor
-object. The same pattern applies to events.
+object. The same pattern applies to events and command replies.
 
 Async request/response is modeled as an askable command plus an associated
 command reply:
 
 ```c
 IPC_CMD_DEFINE_LOCAL(GetLedStateRequest, { uint8_t channel; });
-IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
+IPC_CMD_REPLY_DEFINE_LOCAL(GetLedStateRequest, GetLedStateResponse, {
     uint8_t channel;
     uint8_t on;
     uint8_t brightness;
@@ -134,8 +135,25 @@ IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
 IPC_EVENT_DEFINE_LOCAL(LedFault, { uint32_t error_code; uint8_t channel; });
 ```
 
-`IPC_CMD_REPLY_DEFINE(RequestType, ReplyType, fields)` defines the reply
-payload and associates it with the request type for `ipc_ask()` / `ipc_reply()`.
+For shared ask/reply APIs, declare both the request and reply in the header:
+
+```c
+/* led.h */
+IPC_CMD_DECLARE(GetLedStateRequest, { uint8_t channel; });
+IPC_CMD_REPLY_DECLARE(GetLedStateRequest, GetLedStateResponse, {
+    uint8_t channel;
+    uint8_t on;
+    uint8_t brightness;
+    uint32_t on_time_ms;
+});
+
+/* led.c */
+IPC_CMD_DEFINE(GetLedStateRequest);
+IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse);
+```
+
+The reply macros associate the reply descriptor with the request type for
+`ipc_ask()` / `ipc_reply()`.
 
 ### 2. Define an actor and its typed handlers
 
@@ -188,7 +206,7 @@ IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on) {
 | `IPC_SUPERVISE_STOP`     | Requests the actor to stop.                                                          |
 | `IPC_SUPERVISE_RESTART`  | Soft restart for message-driven actors: pending delayed work and queued messages are dropped, then stop/start hooks run so state can be reset. |
 
-### 4. Send messages (no `extern` needed)
+### 4. Send messages (`extern` usually not needed)
 
 | Pattern                      | Targets                          | Use it for                                        |
 |-------------------------------|-----------------------------------|----------------------------------------------------|
@@ -205,6 +223,30 @@ handler for that command type.
 ```c
 ipc_send(LedOn, (LedOn_payload_t){.brightness = 200});
 ```
+
+If another translation unit intentionally needs a direct actor handle, define
+that actor with public linkage and declare it where needed:
+
+```c
+/* button_actor.c */
+IPC_ACTOR_DEFINE_PUBLIC(button_actor, "button", 1024, 5, 8,
+                        IPC_MESSAGE_MAX(ButtonIrq));
+
+/* gpio.c */
+extern struct ipc_actor button_actor; /* extern declaration of the actor object */
+
+void gpio_isr_callback(void)
+{
+    ButtonIrq_payload_t payload = {.pin = 3};
+    ipc_send_to(&button_actor, ButtonIrq, payload);
+}
+```
+
+Prefer routed `ipc_send()` for normal cross-actor traffic; use public actor
+handles only when you need the explicit O(1) `ipc_send_to()` path. Note that
+`struct ipc_actor;` is a forward declaration of the type, while
+`extern struct ipc_actor button_actor;` declares an actor object defined in
+another translation unit.
 
 #### Event: announce something to all subscribers
 
