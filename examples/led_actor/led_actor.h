@@ -7,15 +7,15 @@
 #pragma once
 #include <ipc.h>
 
-IPC_CMD_DEFINE(LedOn, { uint8_t brightness; });
-IPC_CMD_DEFINE(LedOff, { uint8_t _pad; }); /* empty struct — use pad byte */
-IPC_CMD_DEFINE(LedBlink, {
+IPC_CMD_DEFINE_LOCAL(LedOn, { uint8_t brightness; });
+IPC_CMD_DEFINE_LOCAL(LedOff, { uint8_t _pad; }); /* empty struct — use pad byte */
+IPC_CMD_DEFINE_LOCAL(LedBlink, {
     uint32_t period_ms;
     uint8_t brightness;
 });
 
-IPC_CMD_DEFINE(GetLedStateRequest, { uint8_t channel; });
-IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
+IPC_CMD_DECLARE(GetLedStateRequest, { uint8_t channel; });
+IPC_CMD_REPLY_DECLARE(GetLedStateRequest, GetLedStateResponse, {
     uint8_t channel;
     uint8_t on;
     uint8_t brightness;
@@ -23,7 +23,7 @@ IPC_CMD_REPLY_DEFINE(GetLedStateRequest, GetLedStateResponse, {
 });
 
 /* Hardware/driver fault notification. Channel identifies the source. */
-IPC_EVENT_DEFINE(LedFault, {
+IPC_EVENT_DEFINE_LOCAL(LedFault, {
     uint32_t error_code;
     uint8_t channel;
 });

@@ -173,7 +173,7 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
 
 static size_t actor_max_payload_size(const struct ipc_actor *actor)
 {
-    return actor->cfg.max_payload_size > 0 ? actor->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+    return actor->cfg.max_payload_size;
 }
 
 static struct ipc_actor *find_registered(uint32_t msg_id)
@@ -547,11 +547,11 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
     return publish_prepared_msg(&msg, desc->id, ipc_port_send);
 }
 
-/* ── ipc_publish_isr_raw ────────────────────────────────────────────────── */
+/* ── ipc_send_to_raw ────────────────────────────────────────────────────── */
 
-int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
+int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const void *payload)
 {
-    if (!desc || desc->kind != IPC_EVENT) {
+    if (!actor || !desc) {
         return -EINVAL;
     }
     if (!actors_started) {
@@ -560,15 +560,18 @@ int ipc_publish_isr_raw(const ipc_msg_desc_t *desc, const void *payload)
     if (desc->id == 0) {
         return -EINVAL;
     }
+    if (desc->size > actor_max_payload_size(actor)) {
+        return -EMSGSIZE;
+    }
 
     struct ipc_msg msg;
     memset(&msg, 0, sizeof(msg));
     msg.id      = desc->id;
-    msg.kind    = IPC_EVENT;
+    msg.kind    = desc->kind;
     msg.size    = desc->size;
     msg.payload = (const uint8_t *) payload;
 
-    return publish_prepared_msg(&msg, desc->id, ipc_port_send_isr);
+    return ipc_port_send_isr(actor, &msg);
 }
 
 /* ── static handler dispatch ────────────────────────────────────────────── */

@@ -25,7 +25,7 @@ static struct ipc_port_state *port_of(struct ipc_actor *a)
 
 static size_t actor_max_payload_size(const struct ipc_actor *a)
 {
-    return a->cfg.max_payload_size > 0 ? a->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+    return a->cfg.max_payload_size;
 }
 
 /* ── Per-actor static resources ────────────────────────────────────────────

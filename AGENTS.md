@@ -67,7 +67,7 @@ Before handing off code changes, run at least the relevant build/tests. For broa
 - Message types are declared with `IPC_CMD_DEFINE` / `IPC_EVENT_DEFINE`.
 - Handlers should use `IPC_HANDLE` when possible.
 - Dispatch chains intentionally use `IPC_DISPATCH_TO(...)` followed by a final unknown-message macro. Do not add semicolons that break the chain shape.
-- Maintain compile-time payload size checks against `IPC_PAYLOAD_SIZE`.
+- Maintain compile-time payload size checks against each actor's explicit max payload size.
 - Be very conservative about changing macro expansion semantics; add or update tests for macro behavior.
 
 ## Testing expectations

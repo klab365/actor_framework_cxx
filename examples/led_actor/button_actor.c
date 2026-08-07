@@ -10,7 +10,7 @@
 
 /* ── Tick: scheduler heartbeat sent to ourselves ─────────────────────────── */
 
-IPC_CMD_DEFINE(ButtonTick, { uint32_t seq; });
+IPC_CMD_DEFINE_LOCAL(ButtonTick, { uint32_t seq; });
 
 /* ── Actor state ─────────────────────────────────────────────────────────── */
 

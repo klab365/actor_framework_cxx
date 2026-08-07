@@ -32,7 +32,8 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
  * stack_size/priority/queue_depth. Preprocessor substitution is purely
  * textual, so a parameter named `stack_size` would also rewrite the
  * designated initializer `.stack_size`. */
-#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)               \
+#define _IPC_ACTOR_DEFINE_WITH_LINKAGE(linkage, actor_sym, actor_name, stack_sz, prio, qdepth,     \
+                                       max_payload)                                                \
     _Static_assert((stack_sz) > 0, #actor_sym ": stack_size must be positive");                    \
     _Static_assert((qdepth) > 0, #actor_sym ": queue_depth must be positive");                     \
     _Static_assert((max_payload) >= 0, #actor_sym ": max_payload must be non-negative");           \
@@ -44,7 +45,7 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
     static char actor_sym##_send_slot[actor_sym##_msg_slot_size];                                  \
     static char actor_sym##_recv_slot[actor_sym##_msg_slot_size];                                  \
     static struct ipc_port_state actor_sym##_port_state;                                           \
-    static struct ipc_actor actor_sym = {                                                          \
+    linkage struct ipc_actor actor_sym = {                                                         \
         .name    = (actor_name),                                                                   \
         .handler = ipc_dispatch_actor_handlers,                                                    \
         .cfg =                                                                                     \
@@ -68,6 +69,13 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
         return 0;                                                                                  \
     }                                                                                              \
     SYS_INIT(actor_sym##_register_static_actor, PRE_KERNEL_2, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT)
+
+#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)      \
+    _IPC_ACTOR_DEFINE_WITH_LINKAGE(static, actor_sym, actor_name, stack_sz, prio, qdepth, \
+                                   max_payload)
+
+#define IPC_ACTOR_DEFINE_PUBLIC(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload) \
+    _IPC_ACTOR_DEFINE_WITH_LINKAGE(, actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
 
 #define IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn)                            \
     _IPC_ACTOR_HANDLE_ADAPTER(actor_sym, MsgType, handler_fn)                       \

@@ -151,7 +151,7 @@ uint32_t mock_port_pending_send_after_delay_ms(struct ipc_actor *a)
 
 static size_t mock_actor_max_payload_size(const struct ipc_actor *a)
 {
-    return a->cfg.max_payload_size > 0 ? a->cfg.max_payload_size : IPC_PAYLOAD_SIZE;
+    return a->cfg.max_payload_size;
 }
 
 static void mock_copy_msg(struct ipc_msg *dst, uint8_t *dst_payload, size_t dst_capacity,
@@ -245,6 +245,8 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
 
 int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
 {
+    mock_actor_state_t *s = mock_port_actor_state(a);
+    s->send_isr_count++;
     return ipc_port_send(a, msg);
 }
 
