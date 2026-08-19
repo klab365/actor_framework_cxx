@@ -63,3 +63,21 @@ if(IPC_COVERAGE)
 endif()
 
 add_test(NAME ipc_unit COMMAND ipc_unit_test)
+
+# ── POSIX integration tests (real pthread port) ───────────────────────────
+
+add_executable(ipc_posix_integration_test
+    integration/test_posix_lifecycle.cpp
+)
+target_link_libraries(ipc_posix_integration_test PRIVATE
+    ipc
+    gtest_main
+)
+target_compile_options(ipc_posix_integration_test PRIVATE -Wall -Wextra)
+
+if(IPC_COVERAGE)
+    target_compile_options(ipc_posix_integration_test PRIVATE --coverage)
+    target_link_options(ipc_posix_integration_test PRIVATE --coverage)
+endif()
+
+add_test(NAME ipc_posix_integration COMMAND ipc_posix_integration_test)

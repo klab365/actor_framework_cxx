@@ -116,6 +116,14 @@ IPC_ACTOR_HANDLE(pong_actor, BasicStatusRequest, on_basic_status_request)
 {
     (void) self;
 
+    if (msg->request_id == 0U) {
+        int rc = ipc_reply_error(raw_msg, -EINVAL);
+        if (rc != 0) {
+            printk("ipc basic: status error reply failed: %d\n", rc);
+        }
+        return;
+    }
+
     BasicStatusResponse_payload_t response = {
         .request_id = msg->request_id,
         .ping_count = atomic_load_explicit(&basic_ping_count, memory_order_relaxed),
@@ -185,18 +193,39 @@ int main(void)
     k_sleep(K_SECONDS(6));
 
     BasicStatusRequest_payload_t request = {.request_id = 1U};
-    int rc = ipc_ask_with(&ping_actor, BasicStatusRequest, request, on_basic_status_response);
+    uint32_t ask_id                      = 0;
+    int rc = ipc_ask_with_id(&ping_actor, BasicStatusRequest, request, on_basic_status_response,
+                             &ask_id, 1000);
     if (rc != 0) {
         printk("ipc basic: status ask failed: %d\n", rc);
+    } else {
+        printk("ipc basic: status ask queued (id=%u)\n", ask_id);
+    }
+
+    /* request_id 0 demonstrates ipc_reply_error(): the response callback
+     * receives result == -EINVAL and does not read msg. */
+    BasicStatusRequest_payload_t invalid_request = {.request_id = 0U};
+    rc = ipc_ask_with(&ping_actor, BasicStatusRequest, invalid_request, on_basic_status_response,
+                      1000);
+    if (rc != 0) {
+        printk("ipc basic: invalid status ask failed to queue: %d\n", rc);
     }
     k_sleep(K_MSEC(100));
+
+    /* This delayed ping belongs to pong_actor. The fault below restarts that
+     * actor, so its pending delayed work must be cancelled before it fires. */
+    BasicPing_payload_t cancelled_ping = {.count = 99U};
+    rc                                 = ipc_send_after(BasicPing, 1000U, cancelled_ping);
+    if (rc != 0) {
+        printk("ipc basic: delayed ping schedule failed: %d\n", rc);
+    }
 
     BasicFault_payload_t fault = {.code = 0xBADCAFEu};
     rc                         = ipc_send(BasicFault, fault);
     if (rc != 0) {
         printk("ipc basic: fault send failed: %d\n", rc);
     }
-    k_sleep(K_MSEC(100));
+    k_sleep(K_MSEC(1200));
 
     ipc_stop_all();
     printk("zephyr-basic OK\n");

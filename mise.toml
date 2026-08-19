@@ -1,6 +1,7 @@
 [env]
 ZEPHYR_SDK_TOOLCHAINS = "x86_64-zephyr-elf"
 ZEPHYR_SDK_SKIP_HOSTTOOLS = "1"
+_.file = ".env"
   
 [plugins]
 zephyr-sdk = "https://github.com/klab365/mise-zephyr-sdk.git"
@@ -26,7 +27,7 @@ depends = ["configure-debug"]
 run = "cmake --build --preset debug"
 
 [tasks.test-debug]
-description = "Run unit tests for the Debug configuration"
+description = "Run unit and POSIX integration tests for the Debug configuration"
 depends = ["build-debug"]
 run = "ctest --preset debug"
 
@@ -75,8 +76,8 @@ description = "Build the Debug configuration (alias for build-debug)"
 depends = ["configure"]
 run = "cmake --build --preset debug"
 
-[tasks.test-unit]
-description = "Run unit tests for the Debug configuration (alias for test-debug)"
+[tasks.tests]
+description = "Run unit and POSIX integration tests"
 depends = ["build"]
 run = "ctest --preset debug"
 
@@ -142,6 +143,9 @@ set -euo pipefail
 LOG="$(mktemp)"
 west build -t run -d build 2>&1 | tee "$LOG"
 grep -q '^zephyr-basic OK$' "$LOG"
+grep -q 'status ask failed: -22' "$LOG"
+grep -q 'pong RESTART complete' "$LOG"
+! grep -q 'ping 99' "$LOG"
 '''
 
 # ── Formatting ────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ Prefer `mise` tasks when available:
 ```sh
 mise run configure
 mise run build
-mise run test-unit
+mise run tests
 mise run check-format
 ```
 

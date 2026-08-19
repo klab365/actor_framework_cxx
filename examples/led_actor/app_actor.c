@@ -85,12 +85,23 @@ int app_actor_module_init(void)
 
 void app_run(void)
 {
-    /* Async ask/reply: ask LED actor for state, then invoke on_led_state
-     * when GetLedStateResponse arrives in app_actor's context. */
+    /* Keep the correlation ID when this request may need cancellation. The
+     * callback still runs in app_actor's context on either reply or timeout. */
     GetLedStateRequest_payload_t req = {.channel = 0};
-    int rc = ipc_ask_with(&app_actor, GetLedStateRequest, req, on_led_state);
+    uint32_t ask_id                  = 0;
+    int rc = ipc_ask_with_id(&app_actor, GetLedStateRequest, req, on_led_state, &ask_id, 1000);
     if (rc != 0) {
         printf("[app] GetLedState ask failed: %d\n", rc);
+    } else {
+        printf("[app] GetLedState ask queued (id=%u)\n", ask_id);
+    }
+
+    /* An unavailable channel demonstrates ipc_reply_error(): on_led_state
+     * receives result == -ENODEV and must not read msg on that path. */
+    GetLedStateRequest_payload_t unavailable = {.channel = 2};
+    rc = ipc_ask_with(&app_actor, GetLedStateRequest, unavailable, on_led_state, 1000);
+    if (rc != 0) {
+        printf("[app] unavailable-channel ask failed to queue: %d\n", rc);
     }
 
     /* EVENT — broadcast, no target */

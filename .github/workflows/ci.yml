@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   check:
-    name: check (format, unit tests)
+    name: check (format, tests)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
       - name: Configure (debug + tests)
         run: mise run configure
 
-      - name: Run unit tests with coverage
+      - name: Run tests with coverage
         run: mise run coverage
 
       - name: SonarQube Scan

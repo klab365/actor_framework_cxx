@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - Added `ipc_send_to()` for O(1) direct actor mailbox delivery, intended for interrupt-originated work after actor startup.
-- Added `IPC_ACTOR_DEFINE_PUBLIC()` for explicitly exported actor handles when direct cross-file actor access is needed.
+- Kept actors strictly file-local: `IPC_ACTOR_DEFINE()` always creates a `static` actor with internal linkage, so there is no externally-exported actor handle or `extern struct ipc_actor` across translation units.
 - Added shared message descriptor declarations with `IPC_CMD_DECLARE()` / `IPC_EVENT_DECLARE()` and extern definitions with `IPC_CMD_DEFINE()` / `IPC_EVENT_DEFINE()`.
 - Added local-only message definition macros `IPC_CMD_DEFINE_LOCAL()` and `IPC_EVENT_DEFINE_LOCAL()`.
 - Added asynchronous ask/reply messaging with typed reply descriptors, correlation IDs, response handlers, reply helpers, and cancellation support.

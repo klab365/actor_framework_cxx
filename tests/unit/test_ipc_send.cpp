@@ -62,6 +62,10 @@ int g_measurements_callback_calls;
 int g_measurements_callback_value;
 int g_no_reply_callback_calls;
 int g_no_reply_callback_value;
+int g_timeout_callback_calls;
+int g_timeout_callback_result;
+int g_error_callback_calls;
+int g_error_callback_result;
 
 static void on_static_handled_cmd(struct ipc_actor *self, const StaticHandledCmd_payload_t *msg,
                                   const struct ipc_msg *raw_msg)
@@ -209,6 +213,28 @@ static void on_no_reply_response(struct ipc_actor *self, int result, const void 
     g_no_reply_callback_value = reply->value;
 }
 
+static void on_timeout_response(struct ipc_actor *self, int result, const void *reply_payload,
+                                size_t reply_size, const struct ipc_msg *raw_msg)
+{
+    (void) self;
+    (void) reply_payload;
+    (void) reply_size;
+    (void) raw_msg;
+    g_timeout_callback_calls++;
+    g_timeout_callback_result = result;
+}
+
+enum { asking_error_actor_max_payload_size = sizeof(NoReplyResponse_payload_t) };
+IPC_ACTOR_RESPONSE_HANDLE(asking_error_actor, NoReplyRequest, NoReplyResponse, on_error_response)
+{
+    (void) self;
+    (void) msg;
+    EXPECT_EQ(result, -EIO);
+    EXPECT_NE(raw_msg, nullptr);
+    g_error_callback_calls++;
+    g_error_callback_result = result;
+}
+
 enum { asking_actor_max_payload_size = sizeof(MeasurementsReply_payload_t) };
 IPC_ACTOR_RESPONSE_HANDLE(asking_actor, GetMeasurements, MeasurementsReply, on_measurements_reply)
 {
@@ -247,6 +273,10 @@ class SendTest : public ::testing::Test
         g_measurements_callback_value = 0;
         g_no_reply_callback_calls     = 0;
         g_no_reply_callback_value     = 0;
+        g_timeout_callback_calls      = 0;
+        g_timeout_callback_result     = 0;
+        g_error_callback_calls        = 0;
+        g_error_callback_result       = 0;
         g_actor.name                  = "test_actor";
         g_actor.cfg.max_payload_size  = 512;
         g_actor.handler               = nullptr;
@@ -295,23 +325,23 @@ TEST_F(SendTest, AskRawRejectsInvalidArguments)
 
     uint32_t ask_id                   = 123;
     EXPECT_EQ(ipc_ask_with_id_raw(nullptr, &NoReplyRequest, nullptr, NoReplyRequest_reply_desc,
-                                  on_no_reply_response, &ask_id),
+                                  on_no_reply_response, &ask_id, 0),
               -EINVAL);
     EXPECT_EQ(ask_id, 0u);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, nullptr, nullptr, NoReplyRequest_reply_desc,
-                                  on_no_reply_response, nullptr),
+                                  on_no_reply_response, nullptr, 0),
               -EINVAL);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, nullptr, nullptr,
-                                  on_no_reply_response, nullptr),
+                                  on_no_reply_response, nullptr, 0),
               -EINVAL);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, nullptr,
-                                  NoReplyRequest_reply_desc, nullptr, nullptr),
+                                  NoReplyRequest_reply_desc, nullptr, nullptr, 0),
               -EINVAL);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &EvtA, nullptr, NoReplyRequest_reply_desc,
-                                  on_no_reply_response, nullptr),
+                                  on_no_reply_response, nullptr, 0),
               -EINVAL);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, nullptr, &EvtA,
-                                  on_no_reply_response, nullptr),
+                                  on_no_reply_response, nullptr, 0),
               -EINVAL);
 }
 
@@ -323,7 +353,7 @@ TEST_F(SendTest, AskRejectsUnregisteredRequest)
 
     uint32_t ask_id                   = 123;
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, nullptr,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id, 0),
               -ENOENT);
     EXPECT_EQ(ask_id, 0u);
 }
@@ -343,17 +373,72 @@ TEST_F(SendTest, AskSendFailureRemovesPendingAsk)
     uint32_t failed_id                = 123;
     mock_port_set_next_send_rc(-EIO);
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &failed_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &failed_id, 0),
               -EIO);
     EXPECT_EQ(failed_id, 0u);
 
     for (size_t i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES; i++) {
         uint32_t ask_id = 0;
         ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                      NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
+                                      NoReplyRequest_reply_desc, on_no_reply_response, &ask_id, 0),
                   0);
         EXPECT_NE(ask_id, 0u);
     }
+}
+
+TEST_F(SendTest, AskTimeoutSendFailureCanBeRetriedAndDuplicateExpiryIsIgnored)
+{
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
+    _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
+
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    asking_actor.handler              = ipc_dispatch_actor_handlers;
+    NoReplyRequest_payload_t request  = {.value = 1};
+    uint32_t ask_id                   = 0;
+    ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
+                                  NoReplyRequest_reply_desc, on_timeout_response, &ask_id, 10),
+              0);
+
+    mock_port_set_next_send_rc(-EIO);
+    ipc_ask_timeout_expired(&asking_actor, ask_id);
+    EXPECT_EQ(g_timeout_callback_calls, 0);
+
+    ipc_ask_timeout_expired(&asking_actor, ask_id);
+    const struct ipc_msg *timeout_msg = mock_port_last_send_msg(&asking_actor);
+    ASSERT_NE(timeout_msg, nullptr);
+    ipc_ask_timeout_expired(&asking_actor, ask_id);
+    ipc_dispatch_actor_handlers(&asking_actor, timeout_msg);
+    EXPECT_EQ(g_timeout_callback_calls, 1);
+    EXPECT_EQ(g_timeout_callback_result, -ETIMEDOUT);
+}
+
+TEST_F(SendTest, AskScheduleFailureRemovesPendingAsk)
+{
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
+    _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
+
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    NoReplyRequest_payload_t request  = {.value = 1};
+    uint32_t ask_id                   = 123;
+
+    mock_port_set_next_schedule_ask_timeout_rc(-EIO);
+    EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id, 10),
+              -EIO);
+    EXPECT_EQ(ask_id, 0u);
+
+    struct ipc_msg request_msg = {};
+    request_msg.ask_id         = 1;
+    request_msg.reply_id       = NoReplyResponse.id;
+    EXPECT_EQ(ipc_reply_error_raw(&request_msg, -EIO), -ENOENT);
 }
 
 TEST_F(SendTest, AskCancelRejectsInvalidOrUnknownAsk)
@@ -367,17 +452,19 @@ TEST_F(SendTest, AskCancelRejectsInvalidOrUnknownAsk)
 
     EXPECT_EQ(ipc_ask_cancel(nullptr, 1), -EINVAL);
     EXPECT_EQ(ipc_ask_cancel(&asking_actor, 0), -EINVAL);
-    EXPECT_EQ(ipc_ask_cancel(&asking_actor, 42), -ENOENT);
+    EXPECT_EQ(ipc_ask_cancel(&asking_actor, 42), -EPERM);
 
     struct ipc_actor target     = {};
     target.name                 = "target";
     target.cfg.max_payload_size = 512;
     _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(ipc_ask_cancel(&asking_actor, 42), -ENOENT);
 
     NoReplyRequest_payload_t request = {.value = 1};
     uint32_t ask_id                  = 0;
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id, 0),
               0);
     ASSERT_NE(ask_id, 0u);
     EXPECT_EQ(ipc_ask_cancel(&other_actor, ask_id), -ENOENT);
@@ -423,7 +510,7 @@ TEST_F(SendTest, AskInvokesCallbackOnReplyInAskingActorContext)
 
     mock_port_set_invoke_handlers(true);
 
-    ASSERT_EQ(ipc_ask(&asking_actor, GetMeasurements, on_measurements_reply), 0);
+    ASSERT_EQ(ipc_ask(&asking_actor, GetMeasurements, on_measurements_reply, 0), 0);
     EXPECT_EQ(g_measurements_callback_calls, 1);
     EXPECT_EQ(g_measurements_callback_value, 42);
 }
@@ -440,7 +527,7 @@ TEST_F(SendTest, AskRejectsOversizedExpectedReplyBeforeSendingRequest)
     asking_actor.cfg.max_payload_size = IPC_MESSAGE_MAX(SmallCmd);
 
     EXPECT_EQ(ipc_ask_raw(&asking_actor, &LargeReplyRequest, nullptr, LargeReplyRequest_reply_desc,
-                          on_no_reply_response),
+                          on_no_reply_response, 0),
               -EMSGSIZE);
     EXPECT_EQ(mock_port_actor_state(&target)->send_count, 0);
 }
@@ -460,19 +547,19 @@ TEST_F(SendTest, AskTableFullReturnsNoMem)
     for (size_t i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES; i++) {
         uint32_t ask_id = 0;
         ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                      NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
+                                      NoReplyRequest_reply_desc, on_no_reply_response, &ask_id, 0),
                   0);
         EXPECT_NE(ask_id, 0u);
     }
 
     uint32_t extra_id = 123;
     EXPECT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &extra_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &extra_id, 0),
               -ENOMEM);
     EXPECT_EQ(extra_id, 0u);
 }
 
-TEST_F(SendTest, AskCancelRemovesPendingAsk)
+TEST_F(SendTest, AskTimeoutIsDispatchedInAskingActorContext)
 {
     struct ipc_actor target     = {};
     target.name                 = "target";
@@ -487,7 +574,94 @@ TEST_F(SendTest, AskCancelRemovesPendingAsk)
     NoReplyRequest_payload_t request  = {.value = 1};
     uint32_t ask_id                   = 0;
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id),
+                                  NoReplyRequest_reply_desc, on_timeout_response, &ask_id, 1000),
+              0);
+    ASSERT_NE(ask_id, 0u);
+    EXPECT_EQ(g_timeout_callback_calls, 0);
+
+    /* Advance the mock clock past the ask timeout. */
+    mock_port_set_now_ms(1001);
+
+    /* Expiry is scheduled independently of later ask activity. */
+    ASSERT_NE(mock_port_last_send_msg(&asking_actor), nullptr);
+    EXPECT_EQ(g_timeout_callback_calls, 0);
+
+    ipc_dispatch_actor_handlers(&asking_actor, mock_port_last_send_msg(&asking_actor));
+    EXPECT_EQ(g_timeout_callback_calls, 1);
+    EXPECT_EQ(g_timeout_callback_result, -ETIMEDOUT);
+}
+
+TEST_F(SendTest, ReplyErrorRejectsInvalidRequestsAndCleansUpAfterSendFailure)
+{
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
+    _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
+
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    NoReplyRequest_payload_t request  = {.value = 1};
+    ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
+                          on_no_reply_response, 0),
+              0);
+    const struct ipc_msg *request_msg = mock_port_last_send_msg(&target);
+    ASSERT_NE(request_msg, nullptr);
+
+    EXPECT_EQ(ipc_reply_error_raw(nullptr, -EIO), -EINVAL);
+    EXPECT_EQ(ipc_reply_error_raw(request_msg, 0), -EINVAL);
+    struct ipc_msg wrong_reply = *request_msg;
+    wrong_reply.reply_id++;
+    EXPECT_EQ(ipc_reply_error_raw(&wrong_reply, -EIO), -EINVAL);
+
+    mock_port_set_next_send_rc(-EIO);
+    EXPECT_EQ(ipc_reply_error_raw(request_msg, -EIO), -EIO);
+    EXPECT_EQ(ipc_reply_error_raw(request_msg, -EIO), -ENOENT);
+}
+
+TEST_F(SendTest, ReplyErrorDeliversFailureToAskingActor)
+{
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
+    _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
+
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    asking_actor.handler              = ipc_dispatch_actor_handlers;
+
+    NoReplyRequest_payload_t request  = {.value = 1};
+    ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
+                          on_error_response, 0),
+              0);
+
+    const struct ipc_msg *request_msg = mock_port_last_send_msg(&target);
+    ASSERT_NE(request_msg, nullptr);
+    EXPECT_EQ(ipc_reply_error(request_msg, -EIO), 0);
+
+    ipc_dispatch_actor_handlers(&asking_actor, mock_port_last_send_msg(&asking_actor));
+    EXPECT_EQ(g_error_callback_calls, 1);
+    EXPECT_EQ(g_error_callback_result, -EIO);
+}
+
+TEST_F(SendTest, AskCancelRemovesPendingAsk)
+{
+    struct ipc_actor target     = {};
+    target.name                 = "target";
+    target.cfg.max_payload_size = 512;
+    _ipc_actor_register_handler_static(&target, &NoReplyRequest, on_no_reply_request_shim);
+
+    struct ipc_actor asking_actor     = {};
+    asking_actor.name                 = "asking_actor";
+    asking_actor.cfg.max_payload_size = 512;
+    asking_actor.handler              = ipc_dispatch_actor_handlers;
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    NoReplyRequest_payload_t request = {.value = 1};
+    uint32_t ask_id                  = 0;
+    ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &ask_id, 0),
               0);
     ASSERT_NE(ask_id, 0u);
 
@@ -513,20 +687,21 @@ TEST_F(SendTest, AskIdsSkipZeroAndExistingPendingIds)
     uint32_t first_id                 = 0;
     _ipc_set_next_ask_id_for_testing(UINT32_MAX);
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &first_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &first_id, 0),
               0);
     EXPECT_EQ(first_id, UINT32_MAX);
 
     uint32_t second_id = 0;
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &second_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &second_id, 0),
               0);
     EXPECT_EQ(second_id, 1u);
 
     _ipc_set_next_ask_id_for_testing(first_id);
     uint32_t collision_id = 0;
     ASSERT_EQ(ipc_ask_with_id_raw(&asking_actor, &NoReplyRequest, &request,
-                                  NoReplyRequest_reply_desc, on_no_reply_response, &collision_id),
+                                  NoReplyRequest_reply_desc, on_no_reply_response, &collision_id,
+                                  0),
               0);
     EXPECT_NE(collision_id, first_id);
     EXPECT_NE(collision_id, 0u);
@@ -545,7 +720,7 @@ TEST_F(SendTest, ReplyWithWrongTypeIsRejectedAndPendingAskRemains)
 
     NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
-                          on_no_reply_response),
+                          on_no_reply_response, 0),
               0);
 
     WrongReplyResponse_payload_t wrong = {.value = 99};
@@ -568,7 +743,7 @@ TEST_F(SendTest, ReplyRejectsOversizedPayloadAndRemovesPendingAsk)
 
     NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
-                          on_no_reply_response),
+                          on_no_reply_response, 0),
               0);
 
     asking_actor.cfg.max_payload_size = IPC_MESSAGE_MAX(SmallCmd);
@@ -590,7 +765,7 @@ TEST_F(SendTest, ReplySendFailureRemovesPendingAsk)
 
     NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
-                          on_no_reply_response),
+                          on_no_reply_response, 0),
               0);
 
     NoReplyResponse_payload_t reply = {.value = 7};
@@ -613,7 +788,7 @@ TEST_F(SendTest, DuplicateAndLateRepliesAreRejected)
 
     NoReplyRequest_payload_t request  = {.value = 1};
     ASSERT_EQ(ipc_ask_raw(&asking_actor, &NoReplyRequest, &request, NoReplyRequest_reply_desc,
-                          on_no_reply_response),
+                          on_no_reply_response, 0),
               0);
 
     NoReplyResponse_payload_t reply   = {.value = 7};

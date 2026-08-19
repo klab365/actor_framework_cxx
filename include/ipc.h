@@ -43,6 +43,7 @@ typedef struct {
     size_t size;
     uint32_t ask_id;
     uint32_t reply_id;
+    int result;
 } ipc_msg_slot_header_t;
 
 #define IPC_MSG_SLOT_HEADER_SIZE \
@@ -126,6 +127,9 @@ struct ipc_msg {
 
     /** Expected reply message ID for ask requests, or 0 for normal sends. */
     uint32_t reply_id;
+
+    /** Reply result, 0 for a payload reply or a negative errno-style error. */
+    int result;
 };
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
@@ -240,47 +244,134 @@ struct ipc_actor {
 };
 
 /**
- * @def IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
  * @brief Define a file-local actor for the active platform port.
  *
- * The active port supplies this macro. It creates a static actor object and any
- * required static port resources, then registers the actor for
- * ipc_start_all_actors().
+ * The active port supplies this macro. It creates a `static` actor object and
+ * any required static port resources (for example a stack and message queue on
+ * Zephyr), then registers the actor so that ipc_start_all_actors() starts it.
  *
- * @def IPC_ACTOR_DEFINE_PUBLIC(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
- * @brief Define an externally-linkable actor for the active platform port.
+ * The actor symbol has internal linkage: it is visible only within the
+ * translation unit that defines it. Actors are always file-local; the handle
+ * can still be passed directly to ipc_send_to() from the same file, for
+ * example from an interrupt posting O(1) straight into the actor's mailbox.
  *
- * Use this variant when other translation units intentionally need a direct
- * actor handle, for example with ipc_send_to(). Those files may declare
- * `extern struct ipc_actor actor_sym`.
+ * @param actor_sym C identifier for the actor object and its generated port
+ *        resources. Must be unique within the translation unit.
+ * @param actor_name String literal used for diagnostics and runtime name
+ *        lookup. Should be unique across the whole program.
+ * @param stack_sz Stack size in bytes for the actor thread. Must be positive.
+ * @param prio Thread priority for the actor thread.
+ * @param qdepth Depth of the actor's message queue. Must be positive.
+ * @param max_payload Maximum payload size in bytes this actor accepts. Must be
+ *        non-negative; used for compile-time payload size checks.
  */
+#define IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload) \
+    _IPC_ACTOR_DEFINE(actor_sym, actor_name, stack_sz, prio, qdepth, max_payload)
 
 /**
- * @def IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn)
  * @brief Register a typed handler for a message on an actor.
  *
  * Defines @p handler_fn with a typed `<MsgType>_payload_t` payload pointer and
  * registers it for @p actor_sym. Commands are routed to one actor; events are
  * delivered to each actor that registers a handler for the event type.
  *
- * @def IPC_START_HOOK(actor_sym, hook_fn)
+ * The handler is invoked in the actor's own thread context. The payload pointer
+ * is valid only for the duration of the call.
+ *
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param MsgType Message descriptor symbol (for example a command or event
+ *        defined with IPC_CMD_DEFINE_LOCAL()).
+ * @param handler_fn Name of the generated handler function. The function
+ *        signature is `void handler_fn(struct ipc_actor *self, const
+ *        MsgType##_payload_t *msg, const struct ipc_msg *raw_msg)`.
+ */
+#define IPC_ACTOR_HANDLE(actor_sym, MsgType, handler_fn) \
+    _IPC_ACTOR_HANDLE_IMPL(actor_sym, MsgType, handler_fn)
+
+/**
  * @brief Define a hook called during ipc_start_all_actors() for @p actor_sym.
  *
- * @def IPC_STOP_HOOK(actor_sym, hook_fn)
+ * The hook runs after the actor's port resources are initialized and before its
+ * thread starts. It is called with the actor as its only argument.
+ *
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param hook_fn Name of the hook function, with signature
+ *        `void hook_fn(struct ipc_actor *self)`.
+ */
+#define IPC_START_HOOK(actor_sym, hook_fn) _IPC_START_HOOK_IMPL(actor_sym, hook_fn)
+
+/**
  * @brief Define a hook called during ipc_stop_all() for @p actor_sym.
  *
- * @def IPC_UNKNOWN(actor_sym, hook_fn)
+ * The hook runs before the framework passes the stop request to the port. It is
+ * called with the actor as its only argument.
+ *
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param hook_fn Name of the hook function, with signature
+ *        `void hook_fn(struct ipc_actor *self)`.
+ */
+#define IPC_STOP_HOOK(actor_sym, hook_fn) _IPC_STOP_HOOK_IMPL(actor_sym, hook_fn)
+
+/**
  * @brief Define a hook called when @p actor_sym receives an unhandled message.
  *
- * @def IPC_SUPERVISE(actor_sym, strategy)
+ * The hook is invoked by the default dispatcher when no typed handler matches a
+ * received message. It is called with the actor and the raw message.
+ *
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param hook_fn Name of the hook function, with signature
+ *        `void hook_fn(struct ipc_actor *self, const struct ipc_msg *msg)`.
+ */
+#define IPC_UNKNOWN(actor_sym, hook_fn) _IPC_UNKNOWN_IMPL(actor_sym, hook_fn)
+
+/**
  * @brief Set @p actor_sym's failure strategy used by ipc_actor_fail().
  *
- * @def IPC_FAIL_HOOK(actor_sym, hook_fn)
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param strategy One of the ipc_supervision_strategy_t values:
+ *        IPC_SUPERVISE_NONE, IPC_SUPERVISE_STOP, or IPC_SUPERVISE_RESTART.
+ */
+#define IPC_SUPERVISE(actor_sym, strategy) _IPC_SUPERVISE_IMPL(actor_sym, strategy)
+
+/**
  * @brief Define a hook called when @p actor_sym reports failure.
  *
- * @def IPC_ACTOR_RESPONSE_HANDLE(actor_sym, RequestType, ReplyType, handler_fn)
- * @brief Define a typed callback for an ipc_ask() reply.
+ * The hook runs before the supervision strategy is applied, so it can observe
+ * or react to the failure reason.
+ *
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param hook_fn Name of the hook function, with signature
+ *        `void hook_fn(struct ipc_actor *self, int reason)`.
  */
+#define IPC_FAIL_HOOK(actor_sym, hook_fn) _IPC_FAIL_HOOK_IMPL(actor_sym, hook_fn)
+
+/**
+ * @brief Define a typed callback for an ipc_ask() reply.
+ *
+ * Defines @p handler_fn as the reply callback for @p actor_sym when answering
+ * @p RequestType requests. The callback runs in the asking actor's context and
+ * receives the reply payload, which is validated against @p ReplyType before
+ * the typed handler is invoked.
+ *
+ * @param actor_sym Actor symbol previously defined with IPC_ACTOR_DEFINE() or
+ *        IPC_ACTOR_DEFINE().
+ * @param RequestType Request message descriptor symbol used with ipc_ask().
+ * @param ReplyType Reply message descriptor symbol produced by the responder.
+ * @param handler_fn Name of the generated typed callback function, with
+ *        signature `void handler_fn(struct ipc_actor *self, int result, const
+ *        ReplyType##_payload_t *msg, const struct ipc_msg *raw_msg)`. When
+ *        @p result is 0, @p msg points to a `<ReplyType>_payload_t`; otherwise
+ *        no reply payload is available and @p msg must not be dereferenced.
+ */
+#define IPC_ACTOR_RESPONSE_HANDLE(actor_sym, RequestType, ReplyType, handler_fn) \
+    _IPC_ACTOR_RESPONSE_HANDLE_IMPL(actor_sym, RequestType, ReplyType, handler_fn)
+
 #include <ipc_actor_define.h>
 
 /* ── Message definition macros ──────────────────────────────────────────── */
@@ -466,35 +557,46 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
  * ipc_publish() from that actor's thread context if fan-out is needed.
  */
 /**
- * @def ipc_ask(self, ReqType, callback)
+ * @def ipc_ask(self, ReqType, callback, timeout_ms)
  * @brief Asynchronously send an empty ask request and invoke @p callback on reply.
+ *
+ * @param timeout_ms Reply timeout in milliseconds, or 0 for no timeout. If the
+ *        reply does not arrive before the timeout, @p callback is invoked with
+ *        result -ETIMEDOUT.
  */
-#define ipc_ask(self, ReqType, callback) \
-    ipc_ask_raw((self), &(ReqType), NULL, ReqType##_reply_desc, (ipc_ask_callback_t) (callback))
+#define ipc_ask(self, ReqType, callback, timeout_ms)                                             \
+    ipc_ask_raw((self), &(ReqType), NULL, ReqType##_reply_desc, (ipc_ask_callback_t) (callback), \
+                (timeout_ms))
 
 /**
- * @def ipc_ask_with(self, ReqType, payload, callback)
+ * @def ipc_ask_with(self, ReqType, payload, callback, timeout_ms)
  * @brief Asynchronously send an ask request payload and invoke @p callback on reply.
+ *
+ * @param timeout_ms Reply timeout in milliseconds, or 0 for no timeout.
  */
-#define ipc_ask_with(self, ReqType, payload, callback)                \
+#define ipc_ask_with(self, ReqType, payload, callback, timeout_ms)    \
     ipc_ask_raw((self), &(ReqType), &(payload), ReqType##_reply_desc, \
-                (ipc_ask_callback_t) (callback))
+                (ipc_ask_callback_t) (callback), (timeout_ms))
 
 /**
- * @def ipc_ask_id(self, ReqType, callback, ask_id_out)
+ * @def ipc_ask_id(self, ReqType, callback, ask_id_out, timeout_ms)
  * @brief Asynchronously send an empty ask request and return its correlation ID.
+ *
+ * @param timeout_ms Reply timeout in milliseconds, or 0 for no timeout.
  */
-#define ipc_ask_id(self, ReqType, callback, ask_id_out)                 \
+#define ipc_ask_id(self, ReqType, callback, ask_id_out, timeout_ms)     \
     ipc_ask_with_id_raw((self), &(ReqType), NULL, ReqType##_reply_desc, \
-                        (ipc_ask_callback_t) (callback), (ask_id_out))
+                        (ipc_ask_callback_t) (callback), (ask_id_out), (timeout_ms))
 
 /**
- * @def ipc_ask_with_id(self, ReqType, payload, callback, ask_id_out)
+ * @def ipc_ask_with_id(self, ReqType, payload, callback, ask_id_out, timeout_ms)
  * @brief Asynchronously send an ask request payload and return its correlation ID.
+ *
+ * @param timeout_ms Reply timeout in milliseconds, or 0 for no timeout.
  */
-#define ipc_ask_with_id(self, ReqType, payload, callback, ask_id_out)         \
-    ipc_ask_with_id_raw((self), &(ReqType), &(payload), ReqType##_reply_desc, \
-                        (ipc_ask_callback_t) (callback), (ask_id_out))
+#define ipc_ask_with_id(self, ReqType, payload, callback, ask_id_out, timeout_ms) \
+    ipc_ask_with_id_raw((self), &(ReqType), &(payload), ReqType##_reply_desc,     \
+                        (ipc_ask_callback_t) (callback), (ask_id_out), (timeout_ms))
 
 /**
  * @def ipc_reply(request_msg, ReplyType, payload)
@@ -502,6 +604,12 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
  */
 #define ipc_reply(request_msg, ReplyType, payload) \
     ipc_reply_raw((request_msg), &(ReplyType), &(payload))
+
+/**
+ * @def ipc_reply_error(request_msg, result)
+ * @brief Complete an ask with a non-zero errno-style result and no payload.
+ */
+#define ipc_reply_error(request_msg, result) ipc_reply_error_raw((request_msg), (result))
 
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 
@@ -563,19 +671,28 @@ int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const v
 
 /**
  * @brief Asynchronously send a request and register a callback for its reply.
+ *
+ * @param timeout_ms Reply timeout in milliseconds, or 0 for no timeout. If the
+ *        reply does not arrive before the timeout, @p callback is invoked with
+ *        result -ETIMEDOUT.
  */
 int ipc_ask_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc, const void *request_payload,
-                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback);
+                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback, uint32_t timeout_ms);
 
 /**
  * @brief Asynchronously send a request and return its correlation ID.
+ *
+ * @param timeout_ms Reply timeout in milliseconds, or 0 for no timeout.
  */
 int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
                         const void *request_payload, ipc_msg_desc_t *reply_desc,
-                        ipc_ask_callback_t callback, uint32_t *ask_id_out);
+                        ipc_ask_callback_t callback, uint32_t *ask_id_out, uint32_t timeout_ms);
 
 /**
  * @brief Cancel a pending ask by correlation ID.
+ *
+ * @return 0 on success, -EINVAL for invalid arguments, -EPERM before actor
+ * startup, or -ENOENT when @p ask_id is not pending for @p self.
  */
 int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id);
 
@@ -584,6 +701,13 @@ int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id);
  */
 int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
                   const void *reply_payload);
+
+/**
+ * @brief Complete an ask with a non-zero errno-style result and no payload.
+ *
+ * The asking actor's callback receives @p result and a zero payload size.
+ */
+int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result);
 
 /* ── Actor lifecycle ────────────────────────────────────────────────────── */
 

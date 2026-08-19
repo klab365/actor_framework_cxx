@@ -10,9 +10,9 @@ The core is platform-agnostic: POSIX (pthreads) and Zephyr (`k_msgq` /
 
 **Design principles:**
 - 📄 One public header: `<ipc.h>` — that's the entire API surface.
-- 🔒 No `extern struct ipc_actor` required for normal cross-actor sends — routed
-  sends use typed message descriptors looked up by ID. Direct actor handles are
-  an explicit opt-in for O(1) local/ISR-style sends.
+- 🔒 No `extern struct ipc_actor` — actors are always file-local. Routed sends
+  use typed message descriptors looked up by ID; `ipc_send_to()` provides an
+  O(1) direct path from the same file (for example an ISR).
 - 🔍 No linker scripts, no central registry file — actors are discovered by
   name at runtime via a linked list.
 - 🚫 No heap allocation in the core.
@@ -26,8 +26,9 @@ The core is platform-agnostic: POSIX (pthreads) and Zephyr (`k_msgq` /
   1. [Define a message type](#1-define-a-message-type)
   2. [Define an actor and its typed handlers](#2-define-an-actor-and-its-typed-handlers)
   3. [Optional actor hooks and supervision](#3-optional-actor-hooks-and-supervision)
-  4. [Send messages (`extern` usually not needed)](#4-send-messages-extern-usually-not-needed)
+  4. [Send messages (no `extern` actor handles)](#4-send-messages-no-extern-actor-handles)
   5. [Run the framework](#5-run-the-framework)
+- [Error codes](#error-codes)
 - [Configuration](#configuration)
 - [Building](#building)
   - [Zephyr](#zephyr)
@@ -206,7 +207,7 @@ IPC_ACTOR_HANDLE(led_actor, LedOn, on_led_on) {
 | `IPC_SUPERVISE_STOP`     | Requests the actor to stop.                                                          |
 | `IPC_SUPERVISE_RESTART`  | Soft restart for message-driven actors: pending delayed work and queued messages are dropped, then stop/start hooks run so state can be reset. |
 
-### 4. Send messages (`extern` usually not needed)
+### 4. Send messages (no `extern` actor handles)
 
 | Pattern                      | Targets                          | Use it for                                        |
 |-------------------------------|-----------------------------------|----------------------------------------------------|
@@ -224,16 +225,13 @@ handler for that command type.
 ipc_send(LedOn, (LedOn_payload_t){.brightness = 200});
 ```
 
-If another translation unit intentionally needs a direct actor handle, define
-that actor with public linkage and declare it where needed:
+To post O(1) straight into an actor's mailbox, keep the actor and the code
+that targets it in the same file (for example an interrupt handler):
 
 ```c
-/* button_actor.c */
-IPC_ACTOR_DEFINE_PUBLIC(button_actor, "button", 1024, 5, 8,
-                        IPC_MESSAGE_MAX(ButtonIrq));
-
-/* gpio.c */
-extern struct ipc_actor button_actor; /* extern declaration of the actor object */
+/* button.c — actor and its ISR live in the same translation unit */
+IPC_ACTOR_DEFINE(button_actor, "button", 1024, 5, 8,
+                 IPC_MESSAGE_MAX(ButtonIrq));
 
 void gpio_isr_callback(void)
 {
@@ -242,11 +240,10 @@ void gpio_isr_callback(void)
 }
 ```
 
-Prefer routed `ipc_send()` for normal cross-actor traffic; use public actor
-handles only when you need the explicit O(1) `ipc_send_to()` path. Note that
-`struct ipc_actor;` is a forward declaration of the type, while
-`extern struct ipc_actor button_actor;` declares an actor object defined in
-another translation unit.
+Prefer routed `ipc_send()` for normal cross-actor traffic; use `ipc_send_to()`
+for the explicit O(1) path from the same file, typically an ISR. Actors are
+always file-local, so there is no `extern` actor handle across translation
+units.
 
 #### Event: announce something to all subscribers
 
@@ -261,6 +258,9 @@ ipc_publish(LedFault, (LedFault_payload_t){.error_code = 0xDEAD, .channel = 1});
 
 Ask/reply sends a command request to one actor and correlates the reply back
 to the asking actor. The response callback runs in the asking actor's context.
+The final argument is the reply timeout in milliseconds (`0` means no timeout);
+if the reply does not arrive in time, the callback is invoked with
+`result == -ETIMEDOUT`.
 
 ```c
 IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request) {
@@ -280,15 +280,102 @@ IPC_ACTOR_RESPONSE_HANDLE(app_actor, GetLedStateRequest, GetLedStateResponse, on
 }
 
 GetLedStateRequest_payload_t req = {.channel = 0};
-ipc_ask_with(&app_actor, GetLedStateRequest, req, on_led_state);
+ipc_ask_with(&app_actor, GetLedStateRequest, req, on_led_state, 1000);
 ```
 
 If you need cancellation, keep the correlation ID returned by the `_id` variant:
 
 ```c
 uint32_t ask_id;
-ipc_ask_with_id(&app_actor, GetLedStateRequest, req, on_led_state, &ask_id);
-ipc_ask_cancel(&app_actor, ask_id);
+int rc = ipc_ask_with_id(&app_actor, GetLedStateRequest, req, on_led_state, &ask_id, 1000);
+if (rc == 0) {
+    /* Cancellation is valid after ipc_start_all_actors(). */
+    ipc_ask_cancel(&app_actor, ask_id);
+}
+```
+
+##### Ask an empty request
+
+Use `ipc_ask()` when the request payload is empty. The reply type is still
+associated with the request using `IPC_CMD_REPLY_DEFINE_LOCAL()` (or the shared
+`DECLARE` / `DEFINE` pair).
+
+```c
+IPC_CMD_DEFINE_LOCAL(RefreshStatus, {});
+IPC_CMD_REPLY_DEFINE_LOCAL(RefreshStatus, RefreshStatusReply, {
+    uint32_t generation;
+});
+
+IPC_ACTOR_RESPONSE_HANDLE(app_actor, RefreshStatus, RefreshStatusReply, on_refresh_status)
+{
+    (void)self;
+    (void)raw_msg;
+    if (result != 0) {
+        printf("refresh failed: %d\n", result);
+        return;
+    }
+    printf("status generation: %u\n", msg->generation);
+}
+
+/* No request payload argument is needed. */
+int rc = ipc_ask(&app_actor, RefreshStatus, on_refresh_status, 250);
+```
+
+##### Return an application error instead of a payload
+
+A responder can complete an ask without constructing the typed response. The
+callback receives the non-zero result and must not dereference `msg` on this
+path.
+
+```c
+IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, on_get_state_request)
+{
+    if (!led_driver_is_ready()) {
+        (void)ipc_reply_error(raw_msg, -EIO);
+        return;
+    }
+
+    GetLedStateResponse_payload_t response = {.channel = msg->channel, .on = 1};
+    (void)ipc_reply(raw_msg, GetLedStateResponse, response);
+}
+
+IPC_ACTOR_RESPONSE_HANDLE(app_actor, GetLedStateRequest, GetLedStateResponse, on_led_state)
+{
+    (void)self;
+    (void)raw_msg;
+    if (result != 0) {
+        printf("LED state unavailable: %d\n", result);
+        return;
+    }
+    use_led_state(msg);
+}
+```
+
+##### Track multiple outstanding asks
+
+Each `_id` ask has its own correlation ID. Keep the IDs in actor-owned state
+when requests can overlap; cancel only the specific request that is no longer
+needed.
+
+```c
+static uint32_t pending_channel_0;
+static uint32_t pending_channel_1;
+
+GetLedStateRequest_payload_t ch0 = {.channel = 0};
+GetLedStateRequest_payload_t ch1 = {.channel = 1};
+
+if (ipc_ask_with_id(&app_actor, GetLedStateRequest, ch0, on_led_state,
+                    &pending_channel_0, 1000) == 0 &&
+    ipc_ask_with_id(&app_actor, GetLedStateRequest, ch1, on_led_state,
+                    &pending_channel_1, 1000) == 0) {
+    /* Each reply invokes on_led_state independently. */
+}
+
+/* For example, when channel 0 is no longer visible: */
+if (pending_channel_0 != 0) {
+    (void)ipc_ask_cancel(&app_actor, pending_channel_0);
+    pending_channel_0 = 0;
+}
 ```
 
 #### Delayed command: send a command later
@@ -331,6 +418,28 @@ POSIX runnable.
 
 ---
 
+## Error codes
+
+Framework APIs return `0` on success and a negative errno-style value on
+failure. Include `<errno.h>` (already included by `<ipc.h>`) and compare
+against the standard error constants; do not compare numeric values.
+
+| Code | Meaning |
+|---|---|
+| `-EINVAL` | Invalid API arguments, an invalid message kind, or an invalid reply/error result. |
+| `-ENOENT` | No route exists for a command, or an ask/reply correlation ID is no longer pending. |
+| `-EMSGSIZE` | The message or expected reply payload exceeds the target actor's configured capacity. |
+| `-ENOMEM` | A fixed framework table, mailbox, or port timeout resource is full. |
+| `-EALREADY` | A reply was already sent for the ask, or actor startup was requested while already running. |
+| `-EBUSY` | Actor startup was requested while the previous generation is stopping and has not yet been joined. |
+| `-EPERM` | The operation requires running actors (for example `ipc_send_to()` or `ipc_ask_cancel()`) but startup has not completed or shutdown has started. |
+| `-ETIMEDOUT` | An ask did not receive a reply before its requested timeout. Delivered through the ask callback's `result`, rather than returned by `ipc_ask*()`. |
+
+Port operations can also return other negative system errno values, such as
+`-EAGAIN` or `-EIO`. Always handle a non-zero return from send, ask, reply, and
+lifecycle APIs. For `IPC_ACTOR_RESPONSE_HANDLE()`, `result == 0` is the only
+case where the typed `msg` payload may be read.
+
 ## Configuration
 
 Actor stack, queue depth, payload capacity, and port runtime state are declared
@@ -359,7 +468,7 @@ you've accepted `mise trust`, the available tasks are:
 ```bash
 mise run configure           # cmake --preset debug
 mise run build               # cmake --build --preset debug
-mise run test-unit           # ctest --preset debug
+mise run tests               # unit + POSIX integration tests
 mise run example-build       # debug + examples preset
 mise run run-example         # builds and runs the led_actor example
 mise run clean               # rm -rf build build-*
@@ -441,10 +550,9 @@ The public surface is intentionally one header (`<ipc.h>`). Anything under
 - **No linker scripts** — the registry is a simple linked list built by
   port-specific static actor startup hooks (POSIX constructors, Zephyr
   `SYS_INIT`) and walked by name lookup.
-- **Actor handles are explicit** — `IPC_ACTOR_DEFINE()` keeps actors
-  file-local. Use `IPC_ACTOR_DEFINE_PUBLIC()` only when other translation
-  units intentionally need `extern struct ipc_actor actor_sym`, e.g. for O(1)
-  `ipc_send_to()`.
+- **Actor handles are explicit** — `IPC_ACTOR_DEFINE()` always keeps actors
+  file-local. Use `ipc_send_to()` from the same file (for example an ISR)
+  for the O(1) direct path.
 - **Message descriptors** — use `IPC_CMD_DECLARE()` / `IPC_EVENT_DECLARE()`
   in headers and one-argument `IPC_CMD_DEFINE()` / `IPC_EVENT_DEFINE()` in
   one source file when a message is shared across translation units.
@@ -463,8 +571,8 @@ The public surface is intentionally one header (`<ipc.h>`). Anything under
   for the full layout and the contract around it. Explicit cancellation is
   not supported.
 - **Port seam** — `struct ipc_actor::port` is an opaque pointer to
-  platform-specific state emitted by the active port's `IPC_ACTOR_DEFINE()`
-  implementation. New ports must implement the full `src/ipc_port.h`
+  platform-specific state emitted by the active port's actor definition
+  macro `IPC_ACTOR_DEFINE()`. New ports must implement the full `src/ipc_port.h`
   interface and provide their own per-actor state storage.
 - **Interrupt-context work** — don't publish from ISR context: `ipc_publish`
   is a fan-out operation that scans subscriptions and may enqueue to many

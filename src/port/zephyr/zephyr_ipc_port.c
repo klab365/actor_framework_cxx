@@ -51,6 +51,17 @@ struct zephyr_static_actor_resources {
 
 static struct zephyr_static_actor_resources static_actor_resources[ZEPHYR_STATIC_ACTOR_CAPACITY];
 static int static_actor_resource_count;
+static int static_actor_resource_registration_error;
+
+enum { ZEPHYR_ASK_TIMEOUT_CAPACITY = 16 };
+typedef struct {
+    struct k_work_delayable work;
+    struct ipc_actor *actor;
+    uint32_t ask_id;
+    bool used;
+} zephyr_ask_timeout_t;
+static zephyr_ask_timeout_t ask_timeouts[ZEPHYR_ASK_TIMEOUT_CAPACITY];
+K_MUTEX_DEFINE(ask_timeout_lock);
 
 int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stack,
                                              size_t stack_size, char *msgq_buf, size_t queue_depth,
@@ -81,6 +92,7 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
     }
 
     if (static_actor_resource_count >= ZEPHYR_STATIC_ACTOR_CAPACITY) {
+        static_actor_resource_registration_error = -ENOMEM;
         return -ENOMEM;
     }
 
@@ -122,6 +134,7 @@ static int store_msg(const struct ipc_port_state *p, char *slot, const struct ip
     header->size                  = msg->size;
     header->ask_id                = msg->ask_id;
     header->reply_id              = msg->reply_id;
+    header->result                = msg->result;
 
     char *payload                 = slot + IPC_MSG_SLOT_HEADER_SIZE;
     if (msg->size > 0) {
@@ -144,6 +157,7 @@ static struct ipc_msg load_msg(const char *slot)
         .payload  = (const uint8_t *) (slot + IPC_MSG_SLOT_HEADER_SIZE),
         .ask_id   = header->ask_id,
         .reply_id = header->reply_id,
+        .result   = header->result,
     };
     return msg;
 }
@@ -202,7 +216,9 @@ int ipc_port_actor_init(struct ipc_actor *a)
 
     struct zephyr_static_actor_resources *static_res = static_resources_for(a);
     if (static_res == NULL) {
-        return -EINVAL;
+        return static_actor_resource_registration_error != 0
+                   ? static_actor_resource_registration_error
+                   : -EINVAL;
     }
 
     /* Static actor macros declare resources and record their usable limits.
@@ -225,6 +241,7 @@ int ipc_port_actor_init(struct ipc_actor *a)
     k_poll_signal_init(&p->signal);
     p->owner = a;
     k_work_init_delayable(&p->delayed_work, delayed_work_fn);
+    k_mutex_init(&p->delay_lock);
 
     k_thread_create(&p->thread, p->stack, stack_size, ipc_thread_fn, a, NULL, NULL, a->cfg.priority,
                     0, K_NO_WAIT);
@@ -266,12 +283,51 @@ int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
     return ipc_port_send(a, msg);
 }
 
+static void ask_timeout_work_fn(struct k_work *work)
+{
+    struct k_work_delayable *delayable = k_work_delayable_from_work(work);
+    zephyr_ask_timeout_t *timeout      = CONTAINER_OF(delayable, zephyr_ask_timeout_t, work);
+    k_mutex_lock(&ask_timeout_lock, K_FOREVER);
+    timeout->used           = false;
+    struct ipc_actor *actor = timeout->actor;
+    uint32_t ask_id         = timeout->ask_id;
+    k_mutex_unlock(&ask_timeout_lock);
+    ipc_ask_timeout_expired(actor, ask_id);
+}
+
+int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
+{
+    k_mutex_lock(&ask_timeout_lock, K_FOREVER);
+    for (int i = 0; i < ZEPHYR_ASK_TIMEOUT_CAPACITY; i++) {
+        if (!ask_timeouts[i].used) {
+            zephyr_ask_timeout_t *timeout = &ask_timeouts[i];
+            timeout->actor                = a;
+            timeout->ask_id               = ask_id;
+            timeout->used                 = true;
+            k_work_init_delayable(&timeout->work, ask_timeout_work_fn);
+            k_work_schedule(&timeout->work, K_MSEC(timeout_ms));
+            k_mutex_unlock(&ask_timeout_lock);
+            return 0;
+        }
+    }
+    k_mutex_unlock(&ask_timeout_lock);
+    return -ENOMEM;
+}
+
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
     struct ipc_port_state *p = port_of(a);
     if (msg->size > actor_max_payload_size(a)) {
         return -EMSGSIZE;
     }
+
+    /* Serialize send_after callers and ensure any in-flight delayed work has
+     * fully finished (including its ipc_port_send tail) before we overwrite
+     * the shared delayed_msg/delayed_payload buffers. This mirrors the POSIX
+     * port's delay_lock + join contract. */
+    k_mutex_lock(&p->delay_lock, K_FOREVER);
+    k_work_cancel_delayable(&p->delayed_work);
+    k_work_flush(&p->delayed_work.work, &p->delayed_work_sync);
 
     p->delayed_msg         = *msg;
     p->delayed_msg.payload = (const uint8_t *) p->delayed_payload;
@@ -283,6 +339,7 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
         }
     }
     k_work_reschedule(&p->delayed_work, K_MSEC(delay_ms));
+    k_mutex_unlock(&p->delay_lock);
     return 0;
 }
 
@@ -301,10 +358,23 @@ int ipc_port_run_all(void)
     return 0;
 }
 
+uint32_t ipc_port_now_ms(void)
+{
+    return k_uptime_get_32();
+}
+
+static void cancel_delayed_send(struct ipc_port_state *p)
+{
+    k_mutex_lock(&p->delay_lock, K_FOREVER);
+    k_work_cancel_delayable(&p->delayed_work);
+    k_work_flush(&p->delayed_work.work, &p->delayed_work_sync);
+    k_mutex_unlock(&p->delay_lock);
+}
+
 void ipc_port_stop_actor(struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
-    k_work_cancel_delayable(&p->delayed_work);
+    cancel_delayed_send(p);
     k_thread_abort(&p->thread);
 }
 
@@ -315,7 +385,7 @@ int ipc_port_restart_actor(struct ipc_actor *a)
     /* Soft restart for message-driven actors: cancel delayed work and
      * drop queued messages. The actor thread keeps running, so this is
      * safe even when an actor reports failure from inside its own handler. */
-    k_work_cancel_delayable(&p->delayed_work);
+    cancel_delayed_send(p);
     k_msgq_purge(&p->msgq);
     return 0;
 }

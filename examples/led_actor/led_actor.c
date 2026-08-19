@@ -21,7 +21,8 @@ static unsigned g_restart_count = 0;
 /* ── Actor instance ──────────────────────────────────────────────────────── */
 
 IPC_ACTOR_DEFINE(led_actor, "led", 512, 5, 8,
-                 IPC_MESSAGE_MAX(LedOn, LedOff, LedBlink, GetLedStateRequest, LedFault));
+                 IPC_MESSAGE_MAX(LedOn, LedOff, LedBlink, GetLedStateRequest, LedFault,
+                                 GetLedStateResponse));
 IPC_SUPERVISE(led_actor, IPC_SUPERVISE_RESTART);
 
 IPC_START_HOOK(led_actor, led_on_start)
@@ -114,6 +115,15 @@ IPC_ACTOR_HANDLE(led_actor, LedBlink, led_blink_handler)
 IPC_ACTOR_HANDLE(led_actor, GetLedStateRequest, get_led_state_handler)
 {
     (void) self;
+    /* Ask errors use the same correlated callback as payload replies. */
+    if (msg->channel > 1) {
+        int rc = ipc_reply_error(raw_msg, -ENODEV);
+        if (rc != 0) {
+            printf("[led] GetLedState error reply failed: %d\n", rc);
+        }
+        return;
+    }
+
     GetLedStateResponse_payload_t resp = {
         .channel    = msg->channel,
         .on         = g_disabled ? 0 : 1,
