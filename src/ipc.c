@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ── Port seam forward declarations ─────────────────────────────────────── */
@@ -46,8 +47,15 @@ typedef struct {
 
 static ipc_subscription_t sub_table[IPC_CORE_MAX_SUBSCRIPTIONS];
 static int sub_count;
-static bool actors_started;
-static uint32_t next_ask_id = 1;
+
+typedef enum {
+    IPC_LIFECYCLE_STOPPED = 0,
+    IPC_LIFECYCLE_RUNNING,
+    IPC_LIFECYCLE_STOPPING,
+} ipc_lifecycle_state_t;
+
+static atomic_int lifecycle_state = ATOMIC_VAR_INIT(IPC_LIFECYCLE_STOPPED);
+static uint32_t next_ask_id       = 1;
 
 typedef struct {
     struct ipc_actor *actor;
@@ -61,14 +69,18 @@ static int handler_count;
 typedef struct {
     bool used;
     bool reply_sent;
+    bool timeout_queued;
     uint32_t ask_id;
     uint32_t reply_id;
+    uint32_t deadline_ms;
     struct ipc_actor *actor;
     ipc_ask_callback_t callback;
 } ipc_pending_ask_t;
 
 static ipc_pending_ask_t ask_table[IPC_CORE_MAX_INFLIGHT_QUERIES];
-static atomic_flag ask_lock = ATOMIC_FLAG_INIT;
+static atomic_flag ask_lock                  = ATOMIC_FLAG_INIT;
+
+static const uint32_t ipc_ask_timeout_msg_id = UINT32_MAX;
 
 static void lock_asks(void)
 {
@@ -103,7 +115,7 @@ void _ipc_reset_for_testing(void)
     memset(ask_table, 0, sizeof(ask_table));
     next_ask_id = 1;
     unlock_asks();
-    actors_started  = false;
+    atomic_store_explicit(&lifecycle_state, IPC_LIFECYCLE_STOPPED, memory_order_release);
     _ipc_actor_list = NULL;
 }
 
@@ -117,8 +129,12 @@ void _ipc_reset_for_testing(void)
  */
 static void _ipc_ensure_id(ipc_msg_desc_t *d)
 {
-    if (!d->id) {
-        d->id = _ipc_fnv1a(d->name);
+    uint32_t id = __atomic_load_n(&d->id, __ATOMIC_ACQUIRE);
+    if (id == 0) {
+        uint32_t expected = 0;
+        uint32_t computed = _ipc_fnv1a(d->name);
+        (void) __atomic_compare_exchange_n(&d->id, &expected, computed, false, __ATOMIC_RELEASE,
+                                           __ATOMIC_ACQUIRE);
     }
 }
 
@@ -154,7 +170,8 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
 
     for (int i = 0; i < sub_count; i++) {
         if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
-            return 0;
+            fprintf(stderr, "ipc: duplicate subscription for '%s'\n", desc->name);
+            return -EALREADY;
         }
     }
 
@@ -206,13 +223,44 @@ static ipc_pending_ask_t *alloc_pending_ask(void)
     return NULL;
 }
 
+void ipc_ask_timeout_expired(struct ipc_actor *actor, uint32_t ask_id)
+{
+    lock_asks();
+    ipc_pending_ask_t *pending = find_pending_ask(ask_id);
+    if (!pending || pending->actor != actor || pending->timeout_queued) {
+        unlock_asks();
+        return;
+    }
+    pending->reply_sent     = true;
+    pending->timeout_queued = true;
+    unlock_asks();
+
+    struct ipc_msg timeout_msg = {
+        .id     = ipc_ask_timeout_msg_id,
+        .kind   = IPC_CMD,
+        .ask_id = ask_id,
+        .result = -ETIMEDOUT,
+    };
+    if (ipc_port_send(actor, &timeout_msg) != 0) {
+        lock_asks();
+        pending = find_pending_ask(ask_id);
+        if (pending && pending->actor == actor) {
+            pending->reply_sent     = false;
+            pending->timeout_queued = false;
+        }
+        unlock_asks();
+    }
+}
+
 static int alloc_ask_id(uint32_t *ask_id)
 {
-    for (int i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES + 2; i++) {
+    size_t candidates_checked = 0;
+    while (candidates_checked < IPC_CORE_MAX_INFLIGHT_QUERIES) {
         uint32_t candidate = next_ask_id++;
         if (candidate == 0) {
-            candidate = next_ask_id++;
+            continue;
         }
+        candidates_checked++;
         if (!find_pending_ask(candidate)) {
             *ask_id = candidate;
             return 0;
@@ -223,7 +271,7 @@ static int alloc_ask_id(uint32_t *ask_id)
 
 static bool registration_closed(const char *op)
 {
-    if (actors_started) {
+    if (atomic_load_explicit(&lifecycle_state, memory_order_acquire) != IPC_LIFECYCLE_STOPPED) {
         fprintf(stderr, "ipc: %s after ipc_start_all_actors() is not supported\n", op);
         assert(0 && "IPC runtime registration is forbidden");
         return true;
@@ -265,19 +313,24 @@ void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t 
     _ipc_actor_register_static(actor);
     _ipc_ensure_id(desc);
 
+    int rc = desc->kind == IPC_EVENT ? subscribe_event_unlocked(actor, desc)
+                                     : register_cmd_unlocked(actor, desc);
+    if (rc) {
+        /* Static registration has no return path to its constructor caller.
+         * Continuing would leave a handler with no command route. */
+        fprintf(stderr, "ipc: handler registration for '%s' failed: %d\n", desc->name, rc);
+        abort();
+    }
+
     if (handler_count >= (IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS)) {
-        assert(0 && "IPC handler table full");
-        return;
+        fprintf(stderr, "ipc: handler table full\n");
+        abort();
     }
 
     handler_table[handler_count].actor   = actor;
     handler_table[handler_count].msg_id  = desc->id;
     handler_table[handler_count].handler = handler;
     handler_count++;
-
-    int rc = desc->kind == IPC_EVENT ? subscribe_event_unlocked(actor, desc)
-                                     : register_cmd_unlocked(actor, desc);
-    (void) rc;
 }
 
 void _ipc_actor_register_start_hook_static(struct ipc_actor *actor, ipc_actor_lifecycle_hook_t hook)
@@ -377,7 +430,7 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
 
 int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
                         const void *request_payload, ipc_msg_desc_t *reply_desc,
-                        ipc_ask_callback_t callback, uint32_t *ask_id_out)
+                        ipc_ask_callback_t callback, uint32_t *ask_id_out, uint32_t timeout_ms)
 {
     if (ask_id_out) {
         *ask_id_out = 0;
@@ -399,6 +452,8 @@ int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
         return -EMSGSIZE;
     }
 
+    uint32_t now_ms = ipc_port_now_ms();
+
     lock_asks();
     ipc_pending_ask_t *pending = alloc_pending_ask();
     if (!pending) {
@@ -414,13 +469,27 @@ int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
     }
 
     *pending = (ipc_pending_ask_t) {
-        .used     = true,
-        .ask_id   = ask_id,
-        .reply_id = reply_desc->id,
-        .actor    = self,
-        .callback = callback,
+        .used        = true,
+        .ask_id      = ask_id,
+        .reply_id    = reply_desc->id,
+        .deadline_ms = timeout_ms > 0 ? now_ms + timeout_ms : 0,
+        .actor       = self,
+        .callback    = callback,
     };
     unlock_asks();
+
+    if (timeout_ms > 0) {
+        rc = ipc_port_schedule_ask_timeout(self, ask_id, timeout_ms);
+        if (rc) {
+            lock_asks();
+            pending = find_pending_ask(ask_id);
+            if (pending) {
+                memset(pending, 0, sizeof(*pending));
+            }
+            unlock_asks();
+            return rc;
+        }
+    }
 
     msg.ask_id   = ask_id;
     msg.reply_id = reply_desc->id;
@@ -442,15 +511,19 @@ int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
 }
 
 int ipc_ask_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc, const void *request_payload,
-                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback)
+                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback, uint32_t timeout_ms)
 {
-    return ipc_ask_with_id_raw(self, request_desc, request_payload, reply_desc, callback, NULL);
+    return ipc_ask_with_id_raw(self, request_desc, request_payload, reply_desc, callback, NULL,
+                               timeout_ms);
 }
 
 int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id)
 {
     if (!self || ask_id == 0) {
         return -EINVAL;
+    }
+    if (atomic_load_explicit(&lifecycle_state, memory_order_acquire) != IPC_LIFECYCLE_RUNNING) {
+        return -EPERM;
     }
 
     lock_asks();
@@ -509,6 +582,50 @@ int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
     return rc;
 }
 
+int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result)
+{
+    if (!request_msg || request_msg->ask_id == 0 || result == 0) {
+        return -EINVAL;
+    }
+
+    lock_asks();
+    ipc_pending_ask_t *pending = find_pending_ask(request_msg->ask_id);
+    if (!pending) {
+        unlock_asks();
+        return -ENOENT;
+    }
+    if (pending->reply_id != request_msg->reply_id) {
+        unlock_asks();
+        return -EINVAL;
+    }
+    if (pending->reply_sent) {
+        unlock_asks();
+        return -EALREADY;
+    }
+
+    struct ipc_actor *target = pending->actor;
+    uint32_t reply_id        = pending->reply_id;
+    pending->reply_sent      = true;
+    unlock_asks();
+
+    struct ipc_msg msg = {
+        .id     = reply_id,
+        .kind   = IPC_CMD,
+        .ask_id = request_msg->ask_id,
+        .result = result,
+    };
+    int rc = ipc_port_send(target, &msg);
+    if (rc) {
+        lock_asks();
+        ipc_pending_ask_t *failed_pending = find_pending_ask(request_msg->ask_id);
+        if (failed_pending) {
+            memset(failed_pending, 0, sizeof(*failed_pending));
+        }
+        unlock_asks();
+    }
+    return rc;
+}
+
 static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
                                 int (*send_fn)(struct ipc_actor *, const struct ipc_msg *))
 {
@@ -529,12 +646,11 @@ static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
 
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
 {
-    /* Only EVENT descriptors may be published. Publishing a CMD descriptor is a programming
-     * error — those go through ipc_send_raw. Without this assert the code
-     * silently overrides msg.kind = IPC_EVENT below, which masks the bug
-     * (and would cause a cmd message to be fan-out delivered to event
-     * subscribers). */
-    assert(desc->kind == IPC_EVENT);
+    /* Only EVENT descriptors may be published. Without this guard the code
+     * below would silently override a command's kind and fan it out. */
+    if (!desc || desc->kind != IPC_EVENT) {
+        return -EINVAL;
+    }
     _ipc_ensure_id(desc);
 
     struct ipc_msg msg;
@@ -551,10 +667,12 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
 
 int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const void *payload)
 {
+    /* Direct delivery intentionally preserves either command or event kind;
+     * callers use it for local mailbox posting, not route/subscription lookup. */
     if (!actor || !desc) {
         return -EINVAL;
     }
-    if (!actors_started) {
+    if (atomic_load_explicit(&lifecycle_state, memory_order_acquire) != IPC_LIFECYCLE_RUNNING) {
         return -EPERM;
     }
     if (desc->id == 0) {
@@ -586,13 +704,17 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
         ipc_ask_callback_t callback = NULL;
         lock_asks();
         ipc_pending_ask_t *pending = find_pending_ask(msg->ask_id);
-        if (pending && pending->actor == self && pending->reply_id == msg->id) {
+        if (msg->id == ipc_ask_timeout_msg_id && pending && pending->actor == self &&
+            pending->timeout_queued) {
+            callback = pending->callback;
+            memset(pending, 0, sizeof(*pending));
+        } else if (pending && pending->actor == self && pending->reply_id == msg->id) {
             callback = pending->callback;
             memset(pending, 0, sizeof(*pending));
         }
         unlock_asks();
         if (callback) {
-            callback(self, 0, msg->payload, msg->size, msg);
+            callback(self, msg->result, msg->payload, msg->size, msg);
             return;
         }
     }
@@ -605,31 +727,55 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
         }
     }
 
-    if (self && self->unknown_handler) {
+    if (self->unknown_handler) {
         self->unknown_handler(self, msg);
     }
 }
 
 /* ── ipc_start_all_actors / ipc_run_all / ipc_stop_all ──────────────────── */
 
+static void stop_actors_through(const struct ipc_actor *last)
+{
+    for (struct ipc_actor *a = _ipc_actor_list; a; a = a->_next) {
+        if (a->stop_hook) {
+            a->stop_hook(a);
+        }
+        ipc_port_stop_actor(a);
+        if (a == last) {
+            break;
+        }
+    }
+}
+
 int ipc_start_all_actors(void)
 {
-    struct ipc_actor *a = _ipc_actor_list;
-    while (a) {
+    int expected = IPC_LIFECYCLE_STOPPED;
+    if (!atomic_compare_exchange_strong_explicit(&lifecycle_state, &expected, IPC_LIFECYCLE_RUNNING,
+                                                 memory_order_acq_rel, memory_order_acquire)) {
+        return expected == IPC_LIFECYCLE_STOPPING ? -EBUSY : -EALREADY;
+    }
+
+    struct ipc_actor *last_started = NULL;
+    for (struct ipc_actor *a = _ipc_actor_list; a; a = a->_next) {
         int rc = ipc_port_actor_init(a);
         if (rc) {
+            if (last_started) {
+                stop_actors_through(last_started);
+            }
+            atomic_store_explicit(&lifecycle_state, IPC_LIFECYCLE_STOPPING, memory_order_release);
             return rc;
         }
+        last_started = a;
         if (a->start_hook) {
             a->start_hook(a);
         }
         rc = ipc_port_start(a);
         if (rc) {
+            stop_actors_through(last_started);
+            atomic_store_explicit(&lifecycle_state, IPC_LIFECYCLE_STOPPING, memory_order_release);
             return rc;
         }
-        a = a->_next;
     }
-    actors_started = true;
     return 0;
 }
 
@@ -639,11 +785,23 @@ int ipc_run_all(void)
      * thread, blocking here until they've all exited. On Zephyr the
      * port is a no-op (the kernel keeps scheduling) and we return
      * without joining. See ipc_port_run_all in each backend. */
-    return ipc_port_run_all();
+    int rc = ipc_port_run_all();
+    if (rc == 0 &&
+        atomic_load_explicit(&lifecycle_state, memory_order_acquire) == IPC_LIFECYCLE_STOPPING) {
+        atomic_store_explicit(&lifecycle_state, IPC_LIFECYCLE_STOPPED, memory_order_release);
+    }
+    return rc;
 }
 
 void ipc_stop_all(void)
 {
+    int expected = IPC_LIFECYCLE_RUNNING;
+    if (!atomic_compare_exchange_strong_explicit(&lifecycle_state, &expected,
+                                                 IPC_LIFECYCLE_STOPPING, memory_order_acq_rel,
+                                                 memory_order_acquire)) {
+        return;
+    }
+
     struct ipc_actor *a = _ipc_actor_list;
     while (a) {
         if (a->stop_hook) {
@@ -675,7 +833,7 @@ int ipc_actor_fail(struct ipc_actor *self, int reason)
         ipc_port_stop_actor(self);
         return 0;
 
-    case IPC_SUPERVISE_RESTART:
+    case IPC_SUPERVISE_RESTART: {
         if (self->stop_hook) {
             self->stop_hook(self);
         }
@@ -687,6 +845,7 @@ int ipc_actor_fail(struct ipc_actor *self, int reason)
             self->start_hook(self);
         }
         return 0;
+    }
     }
 
     return -EINVAL;

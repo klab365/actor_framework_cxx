@@ -47,6 +47,7 @@ static int store_msg(const struct ipc_port_state *p, uint8_t *slot, const struct
     header->size                  = msg->size;
     header->ask_id                = msg->ask_id;
     header->reply_id              = msg->reply_id;
+    header->result                = msg->result;
 
     uint8_t *payload              = slot + IPC_MSG_SLOT_HEADER_SIZE;
     if (msg->size > 0) {
@@ -69,6 +70,7 @@ static struct ipc_msg load_msg(const uint8_t *slot)
         .payload  = slot + IPC_MSG_SLOT_HEADER_SIZE,
         .ask_id   = header->ask_id,
         .reply_id = header->reply_id,
+        .result   = header->result,
     };
     return msg;
 }
@@ -106,7 +108,8 @@ static void *ipc_thread_fn(void *arg)
 int ipc_port_actor_init(struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
-    size_t cap               = a->cfg.queue_depth > 0 ? a->cfg.queue_depth : 8;
+    size_t cap               = a->cfg.queue_depth;
+    p->joined                = true; /* no thread exists until pthread_create succeeds */
 
     size_t max_payload       = actor_max_payload_size(a);
     p->slot_size             = IPC_MSG_SLOT_SIZE(max_payload);
@@ -140,7 +143,23 @@ int ipc_port_actor_init(struct ipc_actor *a)
     /* The actor's thread is spawned here during ipc_start_all_actors().
      * By the time startup returns, the actor is scheduled and polling
      * its queue. */
-    return pthread_create(&p->thread, NULL, ipc_thread_fn, a);
+    int rc = pthread_create(&p->thread, NULL, ipc_thread_fn, a);
+    if (rc != 0) {
+        pthread_mutex_destroy(&p->lock);
+        pthread_cond_destroy(&p->cond);
+        pthread_mutex_destroy(&p->delay_lock);
+        pthread_cond_destroy(&p->delay_cond);
+        free(p->ring);
+        free(p->recv_slot);
+        free(p->delay_payload);
+        p->ring          = NULL;
+        p->recv_slot     = NULL;
+        p->delay_payload = NULL;
+        p->running       = false;
+        p->joined        = true;
+        return -rc;
+    }
+    return 0;
 }
 
 /* ── Delayed send thread ─────────────────────────────────────────────────── */
@@ -224,6 +243,43 @@ int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
     return ipc_port_send(a, msg);
 }
 
+typedef struct {
+    struct ipc_actor *actor;
+    uint32_t ask_id;
+    uint32_t timeout_ms;
+} ipc_ask_timeout_t;
+
+static void *ask_timeout_thread_fn(void *arg)
+{
+    ipc_ask_timeout_t *timeout = arg;
+    struct timespec delay      = {
+        .tv_sec  = timeout->timeout_ms / 1000u,
+        .tv_nsec = (long) (timeout->timeout_ms % 1000u) * 1000000L,
+    };
+    nanosleep(&delay, NULL);
+    ipc_ask_timeout_expired(timeout->actor, timeout->ask_id);
+    free(timeout);
+    return NULL;
+}
+
+int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
+{
+    ipc_ask_timeout_t *timeout = malloc(sizeof(*timeout));
+    if (!timeout) {
+        return -ENOMEM;
+    }
+    *timeout = (ipc_ask_timeout_t) {.actor = a, .ask_id = ask_id, .timeout_ms = timeout_ms};
+
+    pthread_t thread;
+    int rc = pthread_create(&thread, NULL, ask_timeout_thread_fn, timeout);
+    if (rc != 0) {
+        free(timeout);
+        return -rc;
+    }
+    pthread_detach(thread);
+    return 0;
+}
+
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
     struct ipc_port_state *p = port_of(a);
@@ -271,10 +327,7 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
     }
     pthread_mutex_unlock(&p->delay_lock);
 
-    if (rc == EMSGSIZE || rc == -EMSGSIZE) {
-        return -EMSGSIZE;
-    }
-    return rc == 0 ? 0 : -ENOMEM;
+    return rc <= 0 ? rc : -rc;
 }
 
 static void cleanup_actor(struct ipc_actor *a)
@@ -314,6 +367,13 @@ int ipc_port_run_all(void)
         a = a->_next;
     }
     return 0;
+}
+
+uint32_t ipc_port_now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t) ((uint64_t) ts.tv_sec * 1000u + (uint64_t) ts.tv_nsec / 1000000u);
 }
 
 static void cancel_delayed_send(struct ipc_port_state *p)

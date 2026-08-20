@@ -38,10 +38,24 @@ typedef struct {
      * uniform-failure knob above. */
     int next_send_rc;
     int next_send_after_rc;
+    int next_schedule_ask_timeout_rc;
+    int next_port_start_rc;
     int next_restart_rc;
+    /* Monotonic clock returned by ipc_port_now_ms(). */
+    uint32_t now_ms;
 } mock_state_t;
 
 static mock_state_t g_mock;
+
+typedef struct {
+    bool used;
+    struct ipc_actor *actor;
+    uint32_t ask_id;
+    uint32_t deadline_ms;
+} mock_ask_timeout_t;
+
+enum { MOCK_ASK_TIMEOUT_CAPACITY = 16 };
+static mock_ask_timeout_t mock_ask_timeouts[MOCK_ASK_TIMEOUT_CAPACITY];
 
 void mock_port_init(void)
 {
@@ -54,14 +68,18 @@ void mock_port_reset(void)
     pthread_mutex_lock(&g_mock.lock);
     int n = g_mock.n_slots;
     memset(g_mock.slots, 0, sizeof(g_mock.slots));
-    g_mock.n_slots                = n;
-    g_mock.send_should_fail       = false;
-    g_mock.invoke_handlers        = false;
-    g_mock.run_all_rc             = 0;
-    g_mock.next_start_should_fail = NULL;
-    g_mock.next_send_rc           = 0;
-    g_mock.next_send_after_rc     = 0;
-    g_mock.next_restart_rc        = 0;
+    g_mock.n_slots                      = n;
+    g_mock.send_should_fail             = false;
+    g_mock.invoke_handlers              = false;
+    g_mock.run_all_rc                   = 0;
+    g_mock.next_start_should_fail       = NULL;
+    g_mock.next_send_rc                 = 0;
+    g_mock.next_send_after_rc           = 0;
+    g_mock.next_schedule_ask_timeout_rc = 0;
+    g_mock.next_port_start_rc           = 0;
+    g_mock.next_restart_rc              = 0;
+    g_mock.now_ms                       = 0;
+    memset(mock_ask_timeouts, 0, sizeof(mock_ask_timeouts));
     pthread_mutex_unlock(&g_mock.lock);
 }
 
@@ -99,6 +117,16 @@ void mock_port_set_next_send_after_rc(int rc)
     g_mock.next_send_after_rc = rc;
 }
 
+void mock_port_set_next_schedule_ask_timeout_rc(int rc)
+{
+    g_mock.next_schedule_ask_timeout_rc = rc;
+}
+
+void mock_port_set_next_port_start_rc(int rc)
+{
+    g_mock.next_port_start_rc = rc;
+}
+
 void mock_port_set_next_restart_rc(int rc)
 {
     g_mock.next_restart_rc = rc;
@@ -117,6 +145,18 @@ void mock_port_set_invoke_handlers(bool enabled)
 void mock_port_set_run_all_rc(int rc)
 {
     g_mock.run_all_rc = rc;
+}
+
+void mock_port_set_now_ms(uint32_t now_ms)
+{
+    g_mock.now_ms = now_ms;
+    for (size_t i = 0; i < MOCK_ASK_TIMEOUT_CAPACITY; i++) {
+        if (mock_ask_timeouts[i].used &&
+            (int32_t) (now_ms - mock_ask_timeouts[i].deadline_ms) >= 0) {
+            mock_ask_timeouts[i].used = false;
+            ipc_ask_timeout_expired(mock_ask_timeouts[i].actor, mock_ask_timeouts[i].ask_id);
+        }
+    }
 }
 
 const struct ipc_msg *mock_port_last_send_msg(struct ipc_actor *a)
@@ -194,9 +234,14 @@ int ipc_port_start(struct ipc_actor *a)
 {
     /* The actor thread is spawned in ipc_port_actor_init on real
      * platforms. The mock's start_count is already incremented
-     * there; this hook is a no-op kept for port-interface
+     * there; this hook is otherwise a no-op kept for port-interface
      * compatibility. */
     (void) a;
+    if (g_mock.next_port_start_rc) {
+        int rc                    = g_mock.next_port_start_rc;
+        g_mock.next_port_start_rc = 0;
+        return rc;
+    }
     return 0;
 }
 
@@ -250,6 +295,27 @@ int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
     return ipc_port_send(a, msg);
 }
 
+int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
+{
+    if (g_mock.next_schedule_ask_timeout_rc) {
+        int rc                              = g_mock.next_schedule_ask_timeout_rc;
+        g_mock.next_schedule_ask_timeout_rc = 0;
+        return rc;
+    }
+    for (size_t i = 0; i < MOCK_ASK_TIMEOUT_CAPACITY; i++) {
+        if (!mock_ask_timeouts[i].used) {
+            mock_ask_timeouts[i] = (mock_ask_timeout_t) {
+                .used        = true,
+                .actor       = a,
+                .ask_id      = ask_id,
+                .deadline_ms = g_mock.now_ms + timeout_ms,
+            };
+            return 0;
+        }
+    }
+    return -ENOMEM;
+}
+
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
     mock_actor_state_t *s = mock_port_actor_state(a);
@@ -280,4 +346,9 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
 int ipc_port_run_all(void)
 {
     return g_mock.run_all_rc;
+}
+
+uint32_t ipc_port_now_ms(void)
+{
+    return g_mock.now_ms;
 }

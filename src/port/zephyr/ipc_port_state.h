@@ -18,5 +18,9 @@ struct ipc_port_state {
     char *recv_slot;
     size_t slot_size;
     struct k_spinlock send_lock;
+    /* Serializes ipc_port_send_after and guarantees any in-flight delayed
+     * work has finished before delayed_msg/delayed_payload are overwritten. */
+    struct k_mutex delay_lock;
+    struct k_work_sync delayed_work_sync;
     struct ipc_actor *owner;
 };

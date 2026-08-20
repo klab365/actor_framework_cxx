@@ -93,6 +93,22 @@ class ErrorPathTest : public ::testing::Test
     }
 };
 
+TEST_F(ErrorPathTest, DuplicateCommandHandlerRegistrationTerminates)
+{
+    register_static_handler(&g_actor, "test_actor", &MsgA, on_msg_a_shim);
+
+    ASSERT_DEATH(_ipc_actor_register_handler_static(&g_actor, &MsgA, on_msg_a_shim),
+                 "duplicate registration");
+}
+
+TEST_F(ErrorPathTest, DuplicateEventHandlerRegistrationTerminates)
+{
+    register_static_handler(&g_actor, "test_actor", &EvtA, on_evt_a_shim);
+
+    ASSERT_DEATH(_ipc_actor_register_handler_static(&g_actor, &EvtA, on_evt_a_shim),
+                 "duplicate subscription");
+}
+
 TEST_F(ErrorPathTest, SendToHandlerNullActorSucceedsWithoutDispatch)
 {
     register_static_handler(&g_no_handler, "no_handler_actor", &MsgA, on_msg_a_shim);
@@ -114,6 +130,12 @@ TEST_F(ErrorPathTest, SendAfterToHandlerNullActorSucceeds)
     EXPECT_EQ(ipc_send_after_raw(&MsgB, 50, &payload), 0);
     const auto *st = mock_port_actor_state(&g_no_handler);
     EXPECT_EQ(st->send_after_count, 1);
+}
+
+TEST_F(ErrorPathTest, PublishCommandIsRejectedInReleaseAndDebugBuilds)
+{
+    MsgA_payload_t payload = {.x = 1};
+    EXPECT_EQ(ipc_publish_raw(&MsgA, &payload), -EINVAL);
 }
 
 TEST_F(ErrorPathTest, PublishToHandlerNullSubscriberSucceeds)

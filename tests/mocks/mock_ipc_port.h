@@ -69,6 +69,12 @@ void mock_port_set_next_send_rc(int rc);
  */
 void mock_port_set_next_send_after_rc(int rc);
 
+/* Inject a specific return code on the next ask-timeout scheduling call. */
+void mock_port_set_next_schedule_ask_timeout_rc(int rc);
+
+/* Inject a specific return code on the next ipc_port_start call. */
+void mock_port_set_next_port_start_rc(int rc);
+
 /* Same, but for ipc_port_restart_actor. */
 void mock_port_set_next_restart_rc(int rc);
 
@@ -86,6 +92,10 @@ void mock_port_set_invoke_handlers(bool enabled);
  * "ipc_run_all() blocked because the actor thread exited with an
  * error" without actually running a thread. */
 void mock_port_set_run_all_rc(int rc);
+
+/* Control the monotonic clock returned by ipc_port_now_ms(). Used to
+ * exercise ask timeouts deterministically. */
+void mock_port_set_now_ms(uint32_t now_ms);
 
 /* Snapshot of the most recent message passed to ipc_port_send for an actor. */
 const struct ipc_msg *mock_port_last_send_msg(struct ipc_actor *a);

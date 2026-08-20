@@ -156,7 +156,51 @@ TEST_F(LifecycleTest, StartAllPropagatesFirstPortError)
     int rc = ipc_start_all_actors();
     EXPECT_EQ(rc, -EINVAL);
     EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 0);
     EXPECT_EQ(mock_port_actor_state(&g_b)->start_count, 0);
+}
+
+TEST_F(LifecycleTest, StartAllRollsBackActorWhenPortStartFails)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    mock_port_set_next_port_start_rc(-EIO);
+
+    EXPECT_EQ(ipc_start_all_actors(), -EIO);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->start_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 1);
+}
+
+TEST_F(LifecycleTest, StartAllRollsBackPreviouslyStartedActors)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    define_test_actor(&g_b, "b", {0, 0, 0, 0});
+    mock_port_set_next_start_should_fail(&g_b);
+
+    EXPECT_EQ(ipc_start_all_actors(), -EINVAL);
+    EXPECT_EQ(mock_port_actor_state(&g_a)->stop_count, 1);
+    EXPECT_EQ(mock_port_actor_state(&g_b)->stop_count, 0);
+}
+
+TEST_F(LifecycleTest, StopAllReopensStaticRegistration)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    ipc_stop_all();
+    ASSERT_EQ(ipc_run_all(), 0);
+
+    EXPECT_NO_FATAL_FAILURE(_ipc_actor_register_static(&g_b));
+}
+
+TEST_F(LifecycleTest, StartAllRejectsConcurrentLifecycleGenerations)
+{
+    define_test_actor(&g_a, "a", {0, 0, 0, 0});
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(ipc_start_all_actors(), -EALREADY);
+
+    ipc_stop_all();
+    EXPECT_EQ(ipc_start_all_actors(), -EBUSY);
+    ASSERT_EQ(ipc_run_all(), 0);
+    EXPECT_EQ(ipc_start_all_actors(), 0);
 }
 
 TEST_F(LifecycleTest, StopAllOnEmptyActorListIsNoop)

@@ -29,6 +29,11 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
 int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg);
 int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
 
+/* Schedule a one-shot ask timeout. The port calls ipc_ask_timeout_expired()
+ * when it elapses; the core validates that the ask is still pending. */
+int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms);
+void ipc_ask_timeout_expired(struct ipc_actor *a, uint32_t ask_id);
+
 /* ── Run-all (blocks on POSIX, no-op on Zephyr) ──────────────────────────── */
 
 /*
@@ -41,3 +46,10 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
  * for code that wants to be cross-platform.
  */
 int ipc_port_run_all(void);
+
+/*
+ * Monotonic time in milliseconds, used by the core for ask timeouts.
+ * Must be monotonic (not wall-clock) so deadline arithmetic is stable
+ * across clock adjustments.
+ */
+uint32_t ipc_port_now_ms(void);

@@ -1,3 +1,5 @@
+.env
+
 build
 build-*/
 _deps/
