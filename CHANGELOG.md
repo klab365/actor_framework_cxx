@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.0
+
+### Added
+
+- Added configurable timeouts for asynchronous asks; timed-out callbacks receive `-ETIMEDOUT`.
+- Added `ipc_reply_error()` so ask responders can return an errno-style error without a reply payload.
+- Added POSIX lifecycle integration coverage and expanded ask, send, and lifecycle test coverage.
+
+### Changed
+
+- Strengthened actor lifecycle handling to reject duplicate starts, prevent restart before stopped threads are joined, and clean up partially started actors.
+- Documented ask timeouts, error replies, lifecycle constraints, and framework error codes.
+
+### Fixed
+
+- Return `-EINVAL` instead of asserting when callers try to publish an invalid or command message descriptor.
+
 ## 1.1.0 (2026-08-06)
 
 ### Added
