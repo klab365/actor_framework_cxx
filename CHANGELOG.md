@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.2.1
+
+### Fixed
+
+- Fixed unaligned-access faults in Zephyr actor message queues on architectures that require naturally aligned memory access.
+
 ## 1.2.0
 
 ### Added

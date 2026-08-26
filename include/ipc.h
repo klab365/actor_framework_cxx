@@ -30,8 +30,10 @@ typedef enum {
 
 #ifdef __cplusplus
 #define IPC_ALIGNOF(type) alignof(type)
+#define IPC_ALIGNAS(type) alignas(type)
 #else
 #define IPC_ALIGNOF(type) _Alignof(type)
+#define IPC_ALIGNAS(type) _Alignas(type)
 #endif
 
 #define IPC_ALIGN_UP(value, alignment) (((value) + (alignment) - 1U) & ~((alignment) - 1U))
@@ -48,7 +50,10 @@ typedef struct {
 
 #define IPC_MSG_SLOT_HEADER_SIZE \
     IPC_ALIGN_UP(sizeof(ipc_msg_slot_header_t), IPC_ALIGNOF(max_align_t))
-#define IPC_MSG_SLOT_SIZE(max_payload_size) (IPC_MSG_SLOT_HEADER_SIZE + (max_payload_size))
+/* Queue storage is addressed as ipc_msg_slot_header_t, so both its base and
+ * every slot stride must preserve this alignment. */
+#define IPC_MSG_SLOT_SIZE(max_payload_size) \
+    IPC_ALIGN_UP(IPC_MSG_SLOT_HEADER_SIZE + (max_payload_size), IPC_ALIGNOF(max_align_t))
 
 #define IPC_MESSAGE_SIZE(MsgType) sizeof(MsgType##_payload_t)
 #define IPC_MESSAGE_MAX1(A) IPC_MESSAGE_SIZE(A)

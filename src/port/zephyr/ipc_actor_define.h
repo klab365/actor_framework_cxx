@@ -39,10 +39,11 @@ int ipc_port_register_static_actor_resources(struct ipc_actor *actor, void *stac
     enum { actor_sym##_max_payload_size = (max_payload) };                                         \
     enum { actor_sym##_msg_slot_size = IPC_MSG_SLOT_SIZE(max_payload) };                           \
     K_THREAD_STACK_DEFINE(actor_sym##_stack, (stack_sz));                                          \
+    IPC_ALIGNAS(max_align_t)                                                                       \
     static char actor_sym##_msgq_buf[(qdepth) * actor_sym##_msg_slot_size];                        \
     static char actor_sym##_delayed_payload[(max_payload) > 0 ? (max_payload) : 1];                \
-    static char actor_sym##_send_slot[actor_sym##_msg_slot_size];                                  \
-    static char actor_sym##_recv_slot[actor_sym##_msg_slot_size];                                  \
+    IPC_ALIGNAS(max_align_t) static char actor_sym##_send_slot[actor_sym##_msg_slot_size];         \
+    IPC_ALIGNAS(max_align_t) static char actor_sym##_recv_slot[actor_sym##_msg_slot_size];         \
     static struct ipc_port_state actor_sym##_port_state;                                           \
     static struct ipc_actor actor_sym = {                                                          \
         .name            = (actor_name),                                                           \
