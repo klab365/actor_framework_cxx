@@ -53,6 +53,10 @@ IPC_EVENT_DECLARE(DeclaredEvt, { int z; });
 IPC_EVENT_DEFINE(DeclaredEvt);
 static_assert(IPC_MESSAGE_MAX(SmallCmd, LargeCmd) == sizeof(LargeCmd_payload_t),
               "IPC_MESSAGE_MAX returns largest payload size");
+static_assert(IPC_MSG_SLOT_HEADER_SIZE % IPC_ALIGNOF(max_align_t) == 0,
+              "message header offset preserves payload alignment");
+static_assert(IPC_MSG_SLOT_SIZE(3) % IPC_ALIGNOF(max_align_t) == 0,
+              "message slot stride preserves header alignment");
 
 int g_static_handler_calls;
 int g_static_handler_value;
