@@ -434,6 +434,7 @@ against the standard error constants; do not compare numeric values.
 | `-EBUSY` | Actor startup was requested while the previous generation is stopping and has not yet been joined. |
 | `-EPERM` | The operation requires running actors (for example `ipc_send_to()` or `ipc_ask_cancel()`) but startup has not completed or shutdown has started. |
 | `-ETIMEDOUT` | An ask did not receive a reply before its requested timeout. Delivered through the ask callback's `result`, rather than returned by `ipc_ask*()`. |
+| `-ENOSYS` | A port feature was compiled out, for example Zephyr delayed sends with `CONFIG_ACTOR_SEND_AFTER=n` or timed asks with `CONFIG_ACTOR_ASK=n`. |
 
 Port operations can also return other negative system errno values, such as
 `-EAGAIN` or `-EIO`. Always handle a non-zero return from send, ask, reply, and
@@ -443,8 +444,7 @@ case where the typed `msg` payload may be read.
 ## Configuration
 
 Actor stack, queue depth, payload capacity, and port runtime state are declared
-per actor with `IPC_ACTOR_DEFINE()`. Registry capacities are fixed
-implementation details, not user configuration.
+per actor with `IPC_ACTOR_DEFINE()`.
 
 Use `IPC_MESSAGE_MAX(...)` to size each actor queue for exactly the messages it
 receives, for example:
@@ -457,6 +457,38 @@ IPC_ACTOR_DEFINE(app_actor, "app", 2048, 0, 8,
 The generated `IPC_ACTOR_HANDLE()` adapters `static_assert` that each handled
 message payload fits that actor's `max_payload` value. Oversized payloads fail
 the build instead of failing at runtime.
+
+### Zephyr footprint options
+
+Zephyr applications can disable optional port features in `prj.conf` to reduce
+RAM and flash usage:
+
+| Kconfig option | Default | Effect |
+|---|---:|---|
+| `CONFIG_ACTOR_DIAGNOSTICS` | `y` | Enables human-readable framework diagnostics for registration/routing errors. Set to `n` to omit diagnostic format strings and stderr/print code. |
+| `CONFIG_ACTOR_MAX_REGISTRATIONS` | `32` | Sizes the core command-route table. Set this to at least the number of command `IPC_ACTOR_HANDLE()` registrations. |
+| `CONFIG_ACTOR_MAX_SUBSCRIPTIONS` | `32` | Sizes the core event-subscription table. Set this to at least the number of event `IPC_ACTOR_HANDLE()` registrations; `0` is valid for command-only apps. |
+| `CONFIG_ACTOR_SEND_AFTER` | `y` | Enables `ipc_send_after()` using per-actor delayed work and payload storage. When disabled, delayed-send storage is omitted and `ipc_send_after()` returns `-ENOSYS`. |
+| `CONFIG_ACTOR_ASK` | `y` | Enables ask/reply APIs, core pending-ask storage, and Zephyr timeout work items. When disabled, ask/reply APIs return `-ENOSYS`. |
+| `CONFIG_ACTOR_MAX_INFLIGHT_ASKS` | `16` | Sizes the core pending-ask table when `CONFIG_ACTOR_ASK=y`. Set this to at least the maximum number of simultaneous asks. |
+| `CONFIG_ACTOR_MAX_PENDING_ASK_TIMEOUTS` | `4` | Sizes the Zephyr ask-timeout work pool when `CONFIG_ACTOR_ASK=y`. Lower it for small apps with few concurrent timed asks. |
+
+Per actor, Zephyr RAM is roughly:
+
+```text
+stack_size
++ queue_depth * IPC_MSG_SLOT_SIZE(max_payload)
++ one send slot and one receive slot
++ delayed-send payload/work state, if CONFIG_ACTOR_SEND_AFTER=y
++ struct ipc_port_state and Zephyr kernel object overhead
+```
+
+To minimize footprint, keep queue depths and `max_payload` values tight, use
+`IPC_MESSAGE_MAX(...)`, tune actor stacks with Zephyr stack analysis, and send
+small references/handles instead of large payloads where possible. The core
+capacity options are checked at build time for valid ranges, and static handler
+registration aborts during startup if an application registers more handlers
+than the configured tables can hold.
 
 ---
 
@@ -501,8 +533,33 @@ Inside a Zephyr app, drop this repo in as the `ipc` module (or use
 CONFIG_ACTOR=y
 ```
 
+For minimal builds, disable optional timed features you do not use:
+
+```kconfig
+CONFIG_ACTOR_SEND_AFTER=n
+CONFIG_ACTOR_ASK=n
+CONFIG_ACTOR_DIAGNOSTICS=n
+```
+
+Or keep ask/reply enabled but reduce the fixed pools:
+
+```kconfig
+CONFIG_ACTOR_ASK=y
+CONFIG_ACTOR_MAX_INFLIGHT_ASKS=4
+CONFIG_ACTOR_MAX_PENDING_ASK_TIMEOUTS=2
+```
+
+You can also reduce route/subscription tables to match the application:
+
+```kconfig
+CONFIG_ACTOR_MAX_REGISTRATIONS=8
+CONFIG_ACTOR_MAX_SUBSCRIPTIONS=0
+```
+
 Actor stack, queue storage, and payload capacity are specified per actor with
-`IPC_ACTOR_DEFINE()`.
+`IPC_ACTOR_DEFINE()`. The Zephyr port blocks actor threads directly on each
+actor's `k_msgq`, so applications do not need Zephyr `CONFIG_POLL` just for
+actor wakeups.
 
 The repo ships a runnable Zephyr sample app at
 [`examples/basic_zephyr/`](examples/basic_zephyr/) that links this framework

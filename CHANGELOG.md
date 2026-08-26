@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.0
+
+### Added
+
+- Added Zephyr Kconfig options to size core command-route, event-subscription, in-flight ask, and pending ask-timeout tables for smaller applications.
+- Added Zephyr Kconfig options to disable delayed sends, ask/reply support, and framework diagnostics when unused.
+- Documented Zephyr footprint tuning guidance for queue depth, payload sizing, actor stacks, and optional timed features.
+
+### Changed
+
+- Reduced Zephyr port overhead by blocking actor threads directly on `k_msgq` mailboxes instead of using `k_poll_signal` wakeups.
+- Reduced Zephyr actor startup/resource overhead by storing static actor resources directly in each actor's port state instead of a fixed global registry table.
+- Reduced optional ask/reply footprint by compiling out core pending-ask storage when Zephyr ask support is disabled.
+
 ## 1.2.1
 
 ### Fixed

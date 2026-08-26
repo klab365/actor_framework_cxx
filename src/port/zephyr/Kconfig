@@ -3,8 +3,71 @@
 
 menuconfig ACTOR
 	bool "IPC Actor Framework"
-	select POLL
 	help
 	  Lightweight active-object framework for embedded targets.
 	  Enable to include the actor runtime, message dispatch, and
 	  port shims in your application.
+
+if ACTOR
+
+config ACTOR_DIAGNOSTICS
+	bool "Enable framework diagnostic messages"
+	default y
+	help
+	  Enable human-readable framework diagnostics for registration and
+	  routing errors. Disable this in size-constrained builds to omit
+	  diagnostic format strings and stderr/print code from the core.
+
+config ACTOR_MAX_REGISTRATIONS
+	int "Maximum command registrations"
+	default 32
+	range 1 1024
+	help
+	  Maximum number of distinct command routes registered with
+	  IPC_ACTOR_HANDLE(). Lower this to reduce core RAM usage.
+
+config ACTOR_MAX_SUBSCRIPTIONS
+	int "Maximum event subscriptions"
+	default 32
+	range 0 1024
+	help
+	  Maximum number of event subscriptions registered with
+	  IPC_ACTOR_HANDLE(). Set to 0 for command-only applications.
+
+config ACTOR_ASK
+	bool "Enable ask/reply support"
+	default y
+	help
+	  Enable ipc_ask(), ipc_reply(), pending ask correlation storage, and
+	  Zephyr timeout work items. Ask/reply APIs return -ENOSYS when this
+	  is disabled.
+
+config ACTOR_MAX_INFLIGHT_ASKS
+	int "Maximum in-flight asks"
+	default 16
+	depends on ACTOR_ASK
+	range 1 1024
+	help
+	  Maximum number of core ask/reply requests that can be pending at the
+	  same time. Lower this to reduce core RAM usage.
+
+config ACTOR_MAX_PENDING_ASK_TIMEOUTS
+	int "Maximum pending ask timeouts"
+	default 4
+	depends on ACTOR_ASK
+	range 1 1024
+	help
+	  Number of ask timeout work items reserved by the Zephyr port.
+	  This should be less than or equal to ACTOR_MAX_INFLIGHT_ASKS when
+	  every in-flight ask may use a timeout. Lower this in small
+	  applications to reduce global RAM usage.
+
+config ACTOR_SEND_AFTER
+	bool "Enable delayed sends"
+	default y
+	help
+	  Enable ipc_send_after() support. Disable this to remove delayed-send
+	  work objects and payload storage from each actor. Calls to
+	  ipc_send_after() return -ENOSYS when disabled.
+
+endif # ACTOR
