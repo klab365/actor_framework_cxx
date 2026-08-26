@@ -12,23 +12,39 @@
 
 #include "ipc.h"
 
-#ifdef __cplusplus
-enum class ipc_core_limit : size_t {
-    max_registrations    = 32,
-    max_subscriptions    = 32,
-    max_inflight_queries = 16,
-};
-
-inline constexpr size_t IPC_CORE_MAX_REGISTRATIONS =
-    static_cast<size_t>(ipc_core_limit::max_registrations);
-inline constexpr size_t IPC_CORE_MAX_SUBSCRIPTIONS =
-    static_cast<size_t>(ipc_core_limit::max_subscriptions);
-inline constexpr size_t IPC_CORE_MAX_INFLIGHT_QUERIES =
-    static_cast<size_t>(ipc_core_limit::max_inflight_queries);
-#else
+#ifndef IPC_CORE_MAX_REGISTRATIONS
 #define IPC_CORE_MAX_REGISTRATIONS 32
+#endif
+
+#ifndef IPC_CORE_MAX_SUBSCRIPTIONS
 #define IPC_CORE_MAX_SUBSCRIPTIONS 32
+#endif
+
+#ifndef IPC_CORE_MAX_INFLIGHT_QUERIES
 #define IPC_CORE_MAX_INFLIGHT_QUERIES 16
+#endif
+
+#ifndef IPC_CONFIG_ENABLE_ASK
+#define IPC_CONFIG_ENABLE_ASK 1
+#endif
+
+#ifndef IPC_CONFIG_ENABLE_DIAGNOSTICS
+#define IPC_CONFIG_ENABLE_DIAGNOSTICS 1
+#endif
+
+#ifdef __cplusplus
+#define IPC_INTERNAL_STATIC_ASSERT static_assert
+#else
+#define IPC_INTERNAL_STATIC_ASSERT _Static_assert
+#endif
+
+IPC_INTERNAL_STATIC_ASSERT(IPC_CORE_MAX_REGISTRATIONS > 0,
+                           "IPC_CORE_MAX_REGISTRATIONS must be greater than zero");
+IPC_INTERNAL_STATIC_ASSERT(IPC_CORE_MAX_SUBSCRIPTIONS >= 0,
+                           "IPC_CORE_MAX_SUBSCRIPTIONS must be non-negative");
+#if IPC_CONFIG_ENABLE_ASK
+IPC_INTERNAL_STATIC_ASSERT(IPC_CORE_MAX_INFLIGHT_QUERIES > 0,
+                           "IPC_CORE_MAX_INFLIGHT_QUERIES must be greater than zero");
 #endif
 
 /* ── FNV-1a hash (used internally for lazy descriptor ID initialisation) ── */

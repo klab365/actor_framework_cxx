@@ -12,9 +12,17 @@
 #include <assert.h>
 #include <errno.h>
 #include <stdatomic.h>
+#if IPC_CONFIG_ENABLE_DIAGNOSTICS
 #include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
+
+#if IPC_CONFIG_ENABLE_DIAGNOSTICS
+#define IPC_DIAG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define IPC_DIAG(...) ((void) 0)
+#endif
 
 /* ── Port seam forward declarations ─────────────────────────────────────── */
 
@@ -45,7 +53,9 @@ typedef struct {
     struct ipc_actor *actor;
 } ipc_subscription_t;
 
+#if IPC_CORE_MAX_SUBSCRIPTIONS > 0
 static ipc_subscription_t sub_table[IPC_CORE_MAX_SUBSCRIPTIONS];
+#endif
 static int sub_count;
 
 typedef enum {
@@ -55,7 +65,9 @@ typedef enum {
 } ipc_lifecycle_state_t;
 
 static atomic_int lifecycle_state = ATOMIC_VAR_INIT(IPC_LIFECYCLE_STOPPED);
-static uint32_t next_ask_id       = 1;
+#if IPC_CONFIG_ENABLE_ASK
+static uint32_t next_ask_id = 1;
+#endif
 
 typedef struct {
     struct ipc_actor *actor;
@@ -66,6 +78,7 @@ typedef struct {
 static ipc_handler_binding_t handler_table[IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS];
 static int handler_count;
 
+#if IPC_CONFIG_ENABLE_ASK
 typedef struct {
     bool used;
     bool reply_sent;
@@ -93,14 +106,19 @@ static void unlock_asks(void)
 {
     atomic_flag_clear_explicit(&ask_lock, memory_order_release);
 }
+#endif
 
 /* ── Test reset ─────────────────────────────────────────────────────────── */
 /* See declaration in ipc_internal.h. Production code must never call this. */
 void _ipc_set_next_ask_id_for_testing(uint32_t next_id)
 {
+#if IPC_CONFIG_ENABLE_ASK
     lock_asks();
     next_ask_id = next_id;
     unlock_asks();
+#else
+    (void) next_id;
+#endif
 }
 
 void _ipc_reset_for_testing(void)
@@ -109,12 +127,16 @@ void _ipc_reset_for_testing(void)
     sub_count     = 0;
     handler_count = 0;
     memset(reg_table, 0, sizeof(reg_table));
+#if IPC_CORE_MAX_SUBSCRIPTIONS > 0
     memset(sub_table, 0, sizeof(sub_table));
+#endif
     memset(handler_table, 0, sizeof(handler_table));
+#if IPC_CONFIG_ENABLE_ASK
     lock_asks();
     memset(ask_table, 0, sizeof(ask_table));
     next_ask_id = 1;
     unlock_asks();
+#endif
     atomic_store_explicit(&lifecycle_state, IPC_LIFECYCLE_STOPPED, memory_order_release);
     _ipc_actor_list = NULL;
 }
@@ -145,7 +167,7 @@ static int register_cmd_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *desc)
 
     for (int i = 0; i < reg_count; i++) {
         if (reg_table[i].msg_id == desc->id) {
-            fprintf(stderr, "ipc: duplicate registration for '%s'\n", desc->name);
+            IPC_DIAG("ipc: duplicate registration for '%s'\n", desc->name);
             assert(0 && "duplicate IPC_ACTOR_HANDLE command route");
             return -EALREADY;
         }
@@ -168,9 +190,10 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
     assert(desc->kind == IPC_EVENT);
     _ipc_ensure_id(desc);
 
+#if IPC_CORE_MAX_SUBSCRIPTIONS > 0
     for (int i = 0; i < sub_count; i++) {
         if (sub_table[i].msg_id == desc->id && sub_table[i].actor == actor) {
-            fprintf(stderr, "ipc: duplicate subscription for '%s'\n", desc->name);
+            IPC_DIAG("ipc: duplicate subscription for '%s'\n", desc->name);
             return -EALREADY;
         }
     }
@@ -184,6 +207,10 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
     sub_count++;
 
     return 0;
+#else
+    (void) actor;
+    return -ENOMEM;
+#endif
 }
 
 /* ── Helper: find registration ───────────────────────────────────────────── */
@@ -203,6 +230,7 @@ static struct ipc_actor *find_registered(uint32_t msg_id)
     return NULL;
 }
 
+#if IPC_CONFIG_ENABLE_ASK
 static ipc_pending_ask_t *find_pending_ask(uint32_t ask_id)
 {
     for (int i = 0; i < IPC_CORE_MAX_INFLIGHT_QUERIES; i++) {
@@ -268,11 +296,18 @@ static int alloc_ask_id(uint32_t *ask_id)
     }
     return -ENOMEM;
 }
+#else
+void ipc_ask_timeout_expired(struct ipc_actor *actor, uint32_t ask_id)
+{
+    (void) actor;
+    (void) ask_id;
+}
+#endif
 
 static bool registration_closed(const char *op)
 {
     if (atomic_load_explicit(&lifecycle_state, memory_order_acquire) != IPC_LIFECYCLE_STOPPED) {
-        fprintf(stderr, "ipc: %s after ipc_start_all_actors() is not supported\n", op);
+        IPC_DIAG("ipc: %s after ipc_start_all_actors() is not supported\n", op);
         assert(0 && "IPC runtime registration is forbidden");
         return true;
     }
@@ -318,12 +353,12 @@ void _ipc_actor_register_handler_static(struct ipc_actor *actor, ipc_msg_desc_t 
     if (rc) {
         /* Static registration has no return path to its constructor caller.
          * Continuing would leave a handler with no command route. */
-        fprintf(stderr, "ipc: handler registration for '%s' failed: %d\n", desc->name, rc);
+        IPC_DIAG("ipc: handler registration for '%s' failed: %d\n", desc->name, rc);
         abort();
     }
 
     if (handler_count >= (IPC_CORE_MAX_REGISTRATIONS + IPC_CORE_MAX_SUBSCRIPTIONS)) {
-        fprintf(stderr, "ipc: handler table full\n");
+        IPC_DIAG("ipc: handler table full\n");
         abort();
     }
 
@@ -397,7 +432,7 @@ static int prepare_registered_cmd(ipc_msg_desc_t *desc, const void *payload, con
     _ipc_ensure_id(desc);
     *target = find_registered(desc->id);
     if (!*target) {
-        fprintf(stderr, "ipc: %s '%s' — not registered\n", op, desc->name);
+        IPC_DIAG("ipc: %s '%s' — not registered\n", op, desc->name);
         return -ENOENT;
     }
     if (desc->size > actor_max_payload_size(*target)) {
@@ -428,6 +463,7 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
     return rc ? rc : ipc_port_send_after(target, &msg, delay_ms);
 }
 
+#if IPC_CONFIG_ENABLE_ASK
 int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
                         const void *request_payload, ipc_msg_desc_t *reply_desc,
                         ipc_ask_callback_t callback, uint32_t *ask_id_out, uint32_t timeout_ms)
@@ -625,10 +661,63 @@ int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result)
     }
     return rc;
 }
+#else
+int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
+                        const void *request_payload, ipc_msg_desc_t *reply_desc,
+                        ipc_ask_callback_t callback, uint32_t *ask_id_out, uint32_t timeout_ms)
+{
+    (void) self;
+    (void) request_desc;
+    (void) request_payload;
+    (void) reply_desc;
+    (void) callback;
+    (void) timeout_ms;
+    if (ask_id_out) {
+        *ask_id_out = 0;
+    }
+    return -ENOSYS;
+}
+
+int ipc_ask_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc, const void *request_payload,
+                ipc_msg_desc_t *reply_desc, ipc_ask_callback_t callback, uint32_t timeout_ms)
+{
+    (void) self;
+    (void) request_desc;
+    (void) request_payload;
+    (void) reply_desc;
+    (void) callback;
+    (void) timeout_ms;
+    return -ENOSYS;
+}
+
+int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id)
+{
+    (void) self;
+    (void) ask_id;
+    return -ENOSYS;
+}
+
+int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
+                  const void *reply_payload)
+{
+    (void) request_msg;
+    (void) reply_desc;
+    (void) reply_payload;
+    return -ENOSYS;
+}
+
+int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result)
+{
+    (void) request_msg;
+    (void) result;
+    return -ENOSYS;
+}
+#endif
 
 static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
                                 int (*send_fn)(struct ipc_actor *, const struct ipc_msg *))
 {
+#if IPC_CORE_MAX_SUBSCRIPTIONS > 0
     int first_rc = 0;
     for (int i = 0; i < sub_count; i++) {
         if (sub_table[i].msg_id == msg_id) {
@@ -640,6 +729,12 @@ static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
         }
     }
     return first_rc;
+#else
+    (void) msg;
+    (void) msg_id;
+    (void) send_fn;
+    return 0;
+#endif
 }
 
 /* ── ipc_publish_raw ─────────────────────────────────────────────────────── */
@@ -700,6 +795,7 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
         return;
     }
 
+#if IPC_CONFIG_ENABLE_ASK
     if (msg->ask_id != 0) {
         ipc_ask_callback_t callback = NULL;
         lock_asks();
@@ -718,6 +814,7 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
             return;
         }
     }
+#endif
 
     for (int i = 0; i < handler_count; i++) {
         const ipc_handler_binding_t *binding = &handler_table[i];
