@@ -26,11 +26,11 @@
 
 /* ── Port seam forward declarations ─────────────────────────────────────── */
 
-int ipc_port_start(struct ipc_actor *a);
-int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
-int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
-void ipc_port_stop_actor(struct ipc_actor *a);
-int ipc_port_restart_actor(struct ipc_actor *a);
+int ipc_port_start(const struct ipc_actor *a);
+int ipc_port_send(const struct ipc_actor *a, const struct ipc_msg *msg);
+int ipc_port_send_after(const struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
+void ipc_port_stop_actor(const struct ipc_actor *a);
+int ipc_port_restart_actor(const struct ipc_actor *a);
 
 /* ── Global actor registry (singly-linked list) ──────────────────────────── */
 
@@ -251,7 +251,7 @@ static ipc_pending_ask_t *alloc_pending_ask(void)
     return NULL;
 }
 
-void ipc_ask_timeout_expired(struct ipc_actor *actor, uint32_t ask_id)
+void ipc_ask_timeout_expired(const struct ipc_actor *actor, uint32_t ask_id)
 {
     lock_asks();
     ipc_pending_ask_t *pending = find_pending_ask(ask_id);
@@ -297,7 +297,7 @@ static int alloc_ask_id(uint32_t *ask_id)
     return -ENOMEM;
 }
 #else
-void ipc_ask_timeout_expired(struct ipc_actor *actor, uint32_t ask_id)
+void ipc_ask_timeout_expired(const struct ipc_actor *actor, uint32_t ask_id)
 {
     (void) actor;
     (void) ask_id;
@@ -595,7 +595,7 @@ int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
         unlock_asks();
         return -EALREADY;
     }
-    struct ipc_actor *target = pending->actor;
+    const struct ipc_actor *target = pending->actor;
     if (reply_desc->size > actor_max_payload_size(target)) {
         memset(pending, 0, sizeof(*pending));
         unlock_asks();
@@ -639,9 +639,9 @@ int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result)
         return -EALREADY;
     }
 
-    struct ipc_actor *target = pending->actor;
-    uint32_t reply_id        = pending->reply_id;
-    pending->reply_sent      = true;
+    const struct ipc_actor *target = pending->actor;
+    uint32_t reply_id              = pending->reply_id;
+    pending->reply_sent            = true;
     unlock_asks();
 
     struct ipc_msg msg = {
@@ -715,13 +715,13 @@ int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result)
 #endif
 
 static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
-                                int (*send_fn)(struct ipc_actor *, const struct ipc_msg *))
+                                int (*send_fn)(const struct ipc_actor *, const struct ipc_msg *))
 {
 #if IPC_CORE_MAX_SUBSCRIPTIONS > 0
     int first_rc = 0;
     for (int i = 0; i < sub_count; i++) {
         if (sub_table[i].msg_id == msg_id) {
-            struct ipc_actor *actor = sub_table[i].actor;
+            const struct ipc_actor *actor = sub_table[i].actor;
             int rc = msg->size > actor_max_payload_size(actor) ? -EMSGSIZE : send_fn(actor, msg);
             if (rc && !first_rc) {
                 first_rc = rc;

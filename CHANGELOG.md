@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.0
+
+### Added
+
+- Added the host-only CMake `ipc_test` target for deterministic actor tests: it preserves copied mailbox delivery while `ipc_test_run_until_idle()` dispatches queued messages without threads or sleeps.
+
 ## 1.3.0
 
 ### Added

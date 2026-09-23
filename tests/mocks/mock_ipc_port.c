@@ -49,7 +49,7 @@ static mock_state_t g_mock;
 
 typedef struct {
     bool used;
-    struct ipc_actor *actor;
+    const struct ipc_actor *actor;
     uint32_t ask_id;
     uint32_t deadline_ms;
 } mock_ask_timeout_t;
@@ -230,7 +230,7 @@ int ipc_port_actor_init(struct ipc_actor *a)
     return 0;
 }
 
-int ipc_port_start(struct ipc_actor *a)
+int ipc_port_start(const struct ipc_actor *a)
 {
     /* The actor thread is spawned in ipc_port_actor_init on real
      * platforms. The mock's start_count is already incremented
@@ -245,15 +245,15 @@ int ipc_port_start(struct ipc_actor *a)
     return 0;
 }
 
-void ipc_port_stop_actor(struct ipc_actor *a)
+void ipc_port_stop_actor(const struct ipc_actor *a)
 {
-    mock_actor_state_t *s = mock_port_actor_state(a);
+    mock_actor_state_t *s = mock_port_actor_state((struct ipc_actor *) a);
     s->stop_count++;
 }
 
-int ipc_port_restart_actor(struct ipc_actor *a)
+int ipc_port_restart_actor(const struct ipc_actor *a)
 {
-    mock_actor_state_t *s = mock_port_actor_state(a);
+    mock_actor_state_t *s = mock_port_actor_state((struct ipc_actor *) a);
     s->restart_count++;
     s->has_pending_send_after = false;
     if (g_mock.next_restart_rc) {
@@ -264,9 +264,9 @@ int ipc_port_restart_actor(struct ipc_actor *a)
     return 0;
 }
 
-int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
+int ipc_port_send(const struct ipc_actor *a, const struct ipc_msg *msg)
 {
-    mock_actor_state_t *s = mock_port_actor_state(a);
+    mock_actor_state_t *s = mock_port_actor_state((struct ipc_actor *) a);
     if (msg->size > mock_actor_max_payload_size(a)) {
         return -EMSGSIZE;
     }
@@ -283,19 +283,19 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     } else if (g_mock.send_should_fail) {
         rc = -ENOMEM;
     } else if (g_mock.invoke_handlers && a->handler) {
-        a->handler(a, &s->last_send_msg);
+        a->handler((struct ipc_actor *) a, &s->last_send_msg);
     }
     return rc;
 }
 
-int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
+int ipc_port_send_isr(const struct ipc_actor *a, const struct ipc_msg *msg)
 {
-    mock_actor_state_t *s = mock_port_actor_state(a);
+    mock_actor_state_t *s = mock_port_actor_state((struct ipc_actor *) a);
     s->send_isr_count++;
     return ipc_port_send(a, msg);
 }
 
-int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
+int ipc_port_schedule_ask_timeout(const struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
 {
     if (g_mock.next_schedule_ask_timeout_rc) {
         int rc                              = g_mock.next_schedule_ask_timeout_rc;
@@ -316,9 +316,9 @@ int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t
     return -ENOMEM;
 }
 
-int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
+int ipc_port_send_after(const struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
-    mock_actor_state_t *s = mock_port_actor_state(a);
+    mock_actor_state_t *s = mock_port_actor_state((struct ipc_actor *) a);
     s->send_after_count++;
     s->last_send_after_delay_ms = delay_ms;
     if (msg->size > mock_actor_max_payload_size(a)) {

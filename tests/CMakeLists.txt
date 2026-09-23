@@ -3,6 +3,7 @@
 # Three test binaries:
 #   - ipc_unit_test: links ipc.c against the mock port (no threads).
 #   - ipc_integration_test: links against the real POSIX port with threads.
+#   - ipc_test_port_test: uses the public deterministic ipc_test port.
 #
 # Tests live in tests/unit and tests/integration. Shared sources
 # (mock port) live in tests/mocks.
@@ -81,3 +82,16 @@ if(IPC_COVERAGE)
 endif()
 
 add_test(NAME ipc_posix_integration COMMAND ipc_posix_integration_test)
+
+# ── Public deterministic test port ───────────────────────────────────────
+
+add_executable(ipc_test_port_test
+    integration/test_ipc_test_port.cpp
+)
+target_link_libraries(ipc_test_port_test PRIVATE
+    ipc_test
+    gtest_main
+)
+target_compile_options(ipc_test_port_test PRIVATE -Wall -Wextra)
+
+add_test(NAME ipc_test_port COMMAND ipc_test_port_test)

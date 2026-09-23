@@ -18,7 +18,7 @@
 
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
-static struct ipc_port_state *port_of(struct ipc_actor *a)
+static struct ipc_port_state *port_of(const struct ipc_actor *a)
 {
     return (struct ipc_port_state *) a->port;
 }
@@ -32,7 +32,7 @@ static size_t actor_max_payload_size(const struct ipc_actor *a)
 enum { ZEPHYR_ASK_TIMEOUT_CAPACITY = CONFIG_ACTOR_MAX_PENDING_ASK_TIMEOUTS };
 typedef struct {
     struct k_work_delayable work;
-    struct ipc_actor *actor;
+    const struct ipc_actor *actor;
     uint32_t ask_id;
     bool used;
 } zephyr_ask_timeout_t;
@@ -156,7 +156,7 @@ int ipc_port_actor_init(struct ipc_actor *a)
     return 0;
 }
 
-int ipc_port_start(struct ipc_actor *a)
+int ipc_port_start(const struct ipc_actor *a)
 {
     /* Actor thread is already spawned in ipc_port_actor_init.
      * This hook is kept for port-interface compatibility but
@@ -165,7 +165,7 @@ int ipc_port_start(struct ipc_actor *a)
     return 0;
 }
 
-int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
+int ipc_port_send(const struct ipc_actor *a, const struct ipc_msg *msg)
 {
     struct ipc_port_state *p = port_of(a);
     if (msg->size > actor_max_payload_size(a)) {
@@ -182,7 +182,7 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     return (rc == 0) ? 0 : -ENOMEM;
 }
 
-int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
+int ipc_port_send_isr(const struct ipc_actor *a, const struct ipc_msg *msg)
 {
     return ipc_port_send(a, msg);
 }
@@ -201,7 +201,7 @@ static void ask_timeout_work_fn(struct k_work *work)
 }
 #endif
 
-int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
+int ipc_port_schedule_ask_timeout(const struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
 {
 #if defined(CONFIG_ACTOR_ASK)
     k_mutex_lock(&ask_timeout_lock, K_FOREVER);
@@ -227,7 +227,7 @@ int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t
 #endif
 }
 
-int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
+int ipc_port_send_after(const struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
 #if defined(CONFIG_ACTOR_SEND_AFTER)
     struct ipc_port_state *p = port_of(a);
@@ -293,7 +293,7 @@ static void cancel_delayed_send(struct ipc_port_state *p)
 }
 #endif
 
-void ipc_port_stop_actor(struct ipc_actor *a)
+void ipc_port_stop_actor(const struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
 #if defined(CONFIG_ACTOR_SEND_AFTER)
@@ -302,7 +302,7 @@ void ipc_port_stop_actor(struct ipc_actor *a)
     k_thread_abort(&p->thread);
 }
 
-int ipc_port_restart_actor(struct ipc_actor *a)
+int ipc_port_restart_actor(const struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
 
