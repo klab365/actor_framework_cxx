@@ -31,6 +31,7 @@ The core is platform-agnostic: POSIX (pthreads) and Zephyr (`k_msgq` /
 - [Error codes](#error-codes)
 - [Configuration](#configuration)
 - [Building](#building)
+  - [Use from another CMake project](#use-from-another-cmake-project)
   - [Zephyr](#zephyr)
 - [Distribution / consumption paths](#distribution--consumption-paths)
 - [Design notes](#design-notes)
@@ -522,6 +523,71 @@ Build options (see top-level `CMakeLists.txt`):
 | `IPC_BUILD_EXAMPLES`   | OFF     | `led_actor_example` binary                          |
 | `IPC_PLATFORM`         | posix   | `posix` (host) or `zephyr` (set by Zephyr's build)  |
 
+### Use from another CMake project
+
+For a host application, add the framework with CMake `FetchContent` and link
+the `ipc` target. Tests and examples are disabled by default, so no IPC build
+options need to be set for a normal consumer build.
+
+```cmake
+include(FetchContent)
+
+FetchContent_Declare(
+    ipc_framework
+    GIT_REPOSITORY https://github.com/klab365/actor_framework_cxx.git
+    # Pin this to a released tag in production.
+    GIT_TAG <release-tag>
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(ipc_framework)
+
+add_executable(my_app main.c)
+target_link_libraries(my_app PRIVATE ipc)
+```
+
+The `ipc` target propagates its public include directory and, on POSIX, its
+thread dependency. Application source files can therefore include only:
+
+```c
+#include <ipc.h>
+```
+
+When developing against a checkout already present in the source tree, replace
+the declaration and `FetchContent_MakeAvailable(...)` calls with:
+
+```cmake
+add_subdirectory(path/to/actor_framework_cxx)
+```
+
+Do not use this host integration for Zephyr applications; use the Zephyr
+module integration described below instead.
+
+### Deterministic actor tests
+
+Host CMake consumers can link an actor test with `ipc_test` instead of `ipc`.
+It is a single-threaded test port: `ipc_send()` still copies into the target
+mailbox, and `ipc_test_run_until_idle()` dispatches queued work
+synchronously. This lets tests exercise real handler registration, routing,
+and dispatch without threads or sleeps.
+
+```cmake
+target_link_libraries(my_actor_test PRIVATE ipc_test)
+```
+
+```c
+#include <ipc.h>
+
+ASSERT_EQ(ipc_test_start(), 0);
+ASSERT_EQ(ipc_send(LedOn, request), 0);
+EXPECT_EQ(ipc_test_run_until_idle(), 1);
+EXPECT_EQ(fake_led_brightness(), request.brightness);
+ipc_test_stop();
+```
+
+`ipc_test` is a host-only CMake target and must not be linked alongside `ipc`.
+Its test port intentionally returns `-ENOSYS` for delayed sends and timed ask
+timeouts; test those features using an integration test against a real port.
+
 ### Zephyr
 
 Skip this section if you only use POSIX/host builds.
@@ -591,10 +657,12 @@ This repo is designed to be consumed in three ways:
    up automatically. The app include path gets both `src/port/zephyr/` and
    `include/`, so `<ipc.h>` can include the Kconfig-aware `ipc_config.h` and
    all translation units agree on the same `IPC_*` sizing values.
-2. **CMake `add_subdirectory` / `FetchContent`** —
-   `target_link_libraries(my_app PRIVATE ipc)` gives you the public include
-   dir transitively. The default platform is POSIX; the Zephyr port is only
-   compiled when `IPC_PLATFORM=zephyr`.
+2. **CMake `add_subdirectory` / `FetchContent`** — see [Use from another
+   CMake project](#use-from-another-cmake-project). `ipc` propagates the
+   public include directory and POSIX thread dependency. Host test targets can
+   instead link `ipc_test` for deterministic queue pumping. The default
+   platform is POSIX; the Zephyr port is only compiled when
+   `IPC_PLATFORM=zephyr`.
 3. **`find_package(ipc)`** *(future)* — install with `cmake --install`.
 
 The public surface is intentionally one header (`<ipc.h>`). Anything under

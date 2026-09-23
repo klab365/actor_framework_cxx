@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct ipc_actor;
 struct ipc_msg;
 
 struct ipc_port_state {
@@ -34,4 +35,5 @@ struct ipc_port_state {
     uint8_t *delay_payload;
     uint32_t delay_ms;
     bool delay_cancel;
+    const struct ipc_actor *owner;
 };

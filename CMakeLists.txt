@@ -83,6 +83,28 @@ else()
     target_link_libraries(ipc PUBLIC Threads::Threads)
 endif()
 
+# ── Deterministic actor test support ──────────────────────────────────────
+
+# `ipc_test` is deliberately excluded from normal builds, but is always
+# available to host consumers that link it explicitly. It recompiles the core
+# against a single-threaded test port; do not link it together with `ipc`.
+if(IPC_PLATFORM STREQUAL "posix")
+    add_library(ipc_test STATIC EXCLUDE_FROM_ALL
+        src/ipc.c
+        src/port/test/ipc_test_port.c
+    )
+    target_include_directories(ipc_test BEFORE PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/port/test>
+    )
+    target_include_directories(ipc_test PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    target_include_directories(ipc_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_options(ipc_test PRIVATE -Wall -Wextra)
+endif()
+
 # ── Tests ─────────────────────────────────────────────────────────────────
 
 if(IPC_BUILD_TESTS)

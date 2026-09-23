@@ -14,9 +14,9 @@
 /* ── Per-actor lifecycle (unchanged) ─────────────────────────────────────── */
 
 int ipc_port_actor_init(struct ipc_actor *a);
-int ipc_port_start(struct ipc_actor *a);
-void ipc_port_stop_actor(struct ipc_actor *a);
-int ipc_port_restart_actor(struct ipc_actor *a);
+int ipc_port_start(const struct ipc_actor *a);
+void ipc_port_stop_actor(const struct ipc_actor *a);
+int ipc_port_restart_actor(const struct ipc_actor *a);
 
 /* ── Per-actor transport (unchanged) ─────────────────────────────────────── */
 
@@ -25,14 +25,14 @@ int ipc_port_restart_actor(struct ipc_actor *a);
  * synchronously; it must not retain pointers supplied by the caller. The
  * publish path reuses one struct ipc_msg across all subscribers.
  */
-int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg);
-int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg);
-int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
+int ipc_port_send(const struct ipc_actor *a, const struct ipc_msg *msg);
+int ipc_port_send_isr(const struct ipc_actor *a, const struct ipc_msg *msg);
+int ipc_port_send_after(const struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms);
 
 /* Schedule a one-shot ask timeout. The port calls ipc_ask_timeout_expired()
  * when it elapses; the core validates that the ask is still pending. */
-int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms);
-void ipc_ask_timeout_expired(struct ipc_actor *a, uint32_t ask_id);
+int ipc_port_schedule_ask_timeout(const struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms);
+void ipc_ask_timeout_expired(const struct ipc_actor *a, uint32_t ask_id);
 
 /* ── Run-all (blocks on POSIX, no-op on Zephyr) ──────────────────────────── */
 

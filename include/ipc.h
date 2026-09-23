@@ -746,6 +746,17 @@ int ipc_run_all(void);
  */
 void ipc_stop_all(void);
 
+#if defined(IPC_CONFIG_TEST_PORT)
+/** Start all actors on the deterministic CMake `ipc_test` port. */
+int ipc_test_start(void);
+
+/** Dispatch copied test-port mailbox messages until all mailboxes are empty. */
+size_t ipc_test_run_until_idle(void);
+
+/** Stop actors and release deterministic test-port mailbox storage. */
+void ipc_test_stop(void);
+#endif
+
 /**
  * @brief Report that an actor failed and apply its supervision strategy.
  *

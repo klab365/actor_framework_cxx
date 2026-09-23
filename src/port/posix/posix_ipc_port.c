@@ -18,7 +18,7 @@
 
 /* ── Per-actor port state (concrete layout) ─────────────────────────────── */
 
-static struct ipc_port_state *port_of(struct ipc_actor *a)
+static struct ipc_port_state *port_of(const struct ipc_actor *a)
 {
     return (struct ipc_port_state *) a->port;
 }
@@ -110,6 +110,7 @@ int ipc_port_actor_init(struct ipc_actor *a)
     struct ipc_port_state *p = port_of(a);
     size_t cap               = a->cfg.queue_depth;
     p->joined                = true; /* no thread exists until pthread_create succeeds */
+    p->owner                 = a;
 
     size_t max_payload       = actor_max_payload_size(a);
     p->slot_size             = IPC_MSG_SLOT_SIZE(max_payload);
@@ -166,8 +167,7 @@ int ipc_port_actor_init(struct ipc_actor *a)
 
 static void *delay_thread_fn(void *arg)
 {
-    struct ipc_actor *self   = (struct ipc_actor *) arg;
-    struct ipc_port_state *p = port_of(self);
+    struct ipc_port_state *p = arg;
 
     pthread_mutex_lock(&p->delay_lock);
 
@@ -200,14 +200,14 @@ static void *delay_thread_fn(void *arg)
     pthread_mutex_unlock(&p->delay_lock);
 
     if (!cancelled) {
-        ipc_port_send(self, &msg);
+        ipc_port_send(p->owner, &msg);
     }
     return NULL;
 }
 
 /* ── Port API ────────────────────────────────────────────────────────────── */
 
-int ipc_port_start(struct ipc_actor *a)
+int ipc_port_start(const struct ipc_actor *a)
 {
     /* Actor thread is already spawned in ipc_port_actor_init.
      * This hook is kept for port-interface compatibility but
@@ -216,7 +216,7 @@ int ipc_port_start(struct ipc_actor *a)
     return 0;
 }
 
-int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
+int ipc_port_send(const struct ipc_actor *a, const struct ipc_msg *msg)
 {
     struct ipc_port_state *p = port_of(a);
     int rc                   = 0;
@@ -238,13 +238,13 @@ int ipc_port_send(struct ipc_actor *a, const struct ipc_msg *msg)
     return rc;
 }
 
-int ipc_port_send_isr(struct ipc_actor *a, const struct ipc_msg *msg)
+int ipc_port_send_isr(const struct ipc_actor *a, const struct ipc_msg *msg)
 {
     return ipc_port_send(a, msg);
 }
 
 typedef struct {
-    struct ipc_actor *actor;
+    const struct ipc_actor *actor;
     uint32_t ask_id;
     uint32_t timeout_ms;
 } ipc_ask_timeout_t;
@@ -262,7 +262,7 @@ static void *ask_timeout_thread_fn(void *arg)
     return NULL;
 }
 
-int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
+int ipc_port_schedule_ask_timeout(const struct ipc_actor *a, uint32_t ask_id, uint32_t timeout_ms)
 {
     ipc_ask_timeout_t *timeout = malloc(sizeof(*timeout));
     if (!timeout) {
@@ -280,7 +280,7 @@ int ipc_port_schedule_ask_timeout(struct ipc_actor *a, uint32_t ask_id, uint32_t
     return 0;
 }
 
-int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
+int ipc_port_send_after(const struct ipc_actor *a, const struct ipc_msg *msg, uint32_t delay_ms)
 {
     struct ipc_port_state *p = port_of(a);
     int rc                   = 0;
@@ -320,7 +320,7 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
     /* If pthread_create fails, leave delay_active false so the next call
      * doesn't try to join a thread that was never created. */
     if (rc == 0) {
-        rc = pthread_create(&p->delay_thread, NULL, delay_thread_fn, a);
+        rc = pthread_create(&p->delay_thread, NULL, delay_thread_fn, p);
         if (rc == 0) {
             p->delay_active = true;
         }
@@ -330,7 +330,7 @@ int ipc_port_send_after(struct ipc_actor *a, const struct ipc_msg *msg, uint32_t
     return rc <= 0 ? rc : -rc;
 }
 
-static void cleanup_actor(struct ipc_actor *a)
+static void cleanup_actor(const struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
 
@@ -345,6 +345,7 @@ static void cleanup_actor(struct ipc_actor *a)
     p->ring          = NULL;
     p->recv_slot     = NULL;
     p->delay_payload = NULL;
+    p->owner         = NULL;
 }
 
 int ipc_port_run_all(void)
@@ -391,7 +392,7 @@ static void cancel_delayed_send(struct ipc_port_state *p)
     pthread_mutex_unlock(&p->delay_lock);
 }
 
-void ipc_port_stop_actor(struct ipc_actor *a)
+void ipc_port_stop_actor(const struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
 
@@ -406,7 +407,7 @@ void ipc_port_stop_actor(struct ipc_actor *a)
     pthread_mutex_unlock(&p->lock);
 }
 
-int ipc_port_restart_actor(struct ipc_actor *a)
+int ipc_port_restart_actor(const struct ipc_actor *a)
 {
     struct ipc_port_state *p = port_of(a);
 
