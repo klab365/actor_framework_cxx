@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.0
+
+### Added
+
+- Added non-blocking per-actor mailbox overflow policies: applications can retain fail-fast errors for retry or intentionally drop full-mailbox messages with observable drop counts.
+
+### Fixed
+
+- Hardened public raw-message APIs to reject invalid descriptors and message kinds with defined errno-style errors while preserving NULL-payload compatibility.
+- Detect message-ID hash collisions during static handler registration before actors start, preventing distinct command or event names from sharing routing state.
+
 ## 1.4.0
 
 ### Added

@@ -442,6 +442,22 @@ Port operations can also return other negative system errno values, such as
 lifecycle APIs. For `IPC_ACTOR_RESPONSE_HANDLE()`, `result == 0` is the only
 case where the typed `msg` payload may be read.
 
+### Mailbox backpressure
+
+Mailbox sends are always non-blocking. The default fail-fast policy returns the
+port's full-mailbox error (`-ENOMEM` or `-EAGAIN`), allowing the application to
+retry or apply its own backpressure. Code in the actor's translation unit may
+opt into deliberate loss before startup:
+
+```c
+ipc_actor_set_mailbox_overflow_policy(&app_actor, IPC_MAILBOX_OVERFLOW_DROP);
+```
+
+With that policy, a full mailbox returns `IPC_DELIVERY_DROPPED` instead of an
+error; `ipc_actor_dropped_message_count()` exposes the per-actor drop count.
+When diagnostics are enabled, each drop is also reported. Other failures are
+returned unchanged.
+
 ## Configuration
 
 Actor stack, queue depth, payload capacity, and port runtime state are declared

@@ -139,6 +139,17 @@ struct ipc_msg {
 
 /* ── Actor config ────────────────────────────────────────────────────────── */
 
+/** Mailbox-full behavior. Sends never block. */
+typedef enum {
+    /** Return the port error (for example -ENOMEM or -EAGAIN) to the sender. */
+    IPC_MAILBOX_OVERFLOW_FAIL = 0,
+    /** Discard a full-mailbox send, increment the actor drop counter, and return IPC_DELIVERY_DROPPED. */
+    IPC_MAILBOX_OVERFLOW_DROP,
+} ipc_mailbox_overflow_policy_t;
+
+/** A send was intentionally dropped because its target mailbox was full. */
+#define IPC_DELIVERY_DROPPED 1
+
 /** @brief Static actor runtime configuration. */
 struct ipc_actor_cfg {
     /** Stack size for the actor's thread. */
@@ -243,6 +254,12 @@ struct ipc_actor {
 
     /** Opaque platform state owned by the active port implementation. */
     void *port;
+
+    /** Internal full-mailbox behavior. Defaults to IPC_MAILBOX_OVERFLOW_FAIL. */
+    ipc_mailbox_overflow_policy_t _mailbox_overflow_policy;
+
+    /** Internal count of messages dropped because this mailbox was full. */
+    uint32_t _dropped_messages;
 
     /** Internal linked-list pointer used by ipc_start_all_actors(). */
     struct ipc_actor *_next;
@@ -513,7 +530,8 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
  *
  * @param MsgType Command descriptor created with IPC_CMD_DEFINE().
  * @param payload Expression of type `<MsgType>_payload_t`.
- * @return 0 on success, or a negative errno-style value on failure.
+ * @return 0 on success, IPC_DELIVERY_DROPPED when a drop policy discards the
+ *         message, or a negative errno-style value on failure.
  */
 #define ipc_send(MsgType, payload) ipc_send_raw(&(MsgType), &(payload))
 
@@ -618,8 +636,12 @@ void ipc_dispatch_actor_handlers(struct ipc_actor *self, const struct ipc_msg *m
 
 /* ── Raw API ─────────────────────────────────────────────────────────────── */
 
+/* Advanced integration API. Typed macros are preferred. Raw descriptors must
+ * have a non-NULL name. A NULL payload is accepted and is copied as zero bytes.
+ * Invalid arguments and descriptor kinds return -EINVAL. */
+
 /**
- * @brief Send a raw payload using a message descriptor.
+ * @brief Send a raw payload using a command descriptor.
  *
  * Most application code should prefer ipc_send().
  *
@@ -655,7 +677,7 @@ int ipc_send_after_raw(ipc_msg_desc_t *desc, uint32_t delay_ms, const void *payl
 int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
 
 /**
- * @brief Directly enqueue a raw message to an actor, bypassing route lookup.
+ * @brief Directly enqueue a raw command or event to an actor, bypassing route lookup.
  *
  * This is the O(1) direct-mailbox path and may be used from interrupt context
  * when the active port's direct send seam is ISR-safe. The descriptor must
@@ -673,6 +695,13 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload);
  *         @p actor, or a negative errno-style value from the port.
  */
 int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const void *payload);
+
+/** Set an actor's non-blocking mailbox-full policy before actor startup. */
+int ipc_actor_set_mailbox_overflow_policy(struct ipc_actor *actor,
+                                          ipc_mailbox_overflow_policy_t policy);
+
+/** Return the number of full-mailbox messages discarded for @p actor. */
+uint32_t ipc_actor_dropped_message_count(const struct ipc_actor *actor);
 
 /**
  * @brief Asynchronously send a request and register a callback for its reply.

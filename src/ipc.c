@@ -40,6 +40,7 @@ struct ipc_actor *_ipc_actor_list = NULL;
 
 typedef struct {
     uint32_t msg_id;
+    const char *msg_name;
     struct ipc_actor *actor;
 } ipc_registration_t;
 
@@ -50,6 +51,7 @@ static int reg_count;
 
 typedef struct {
     uint32_t msg_id;
+    const char *msg_name;
     struct ipc_actor *actor;
 } ipc_subscription_t;
 
@@ -160,10 +162,38 @@ static void _ipc_ensure_id(ipc_msg_desc_t *d)
     }
 }
 
+static int detect_id_collision(const ipc_msg_desc_t *desc)
+{
+    for (int i = 0; i < reg_count; i++) {
+        if (reg_table[i].msg_id == desc->id && strcmp(reg_table[i].msg_name, desc->name) != 0) {
+            IPC_DIAG("ipc: message ID collision 0x%08x between '%s' and '%s'\n",
+                     (unsigned) desc->id, reg_table[i].msg_name, desc->name);
+            return -EEXIST;
+        }
+    }
+
+#if IPC_CORE_MAX_SUBSCRIPTIONS > 0
+    for (int i = 0; i < sub_count; i++) {
+        if (sub_table[i].msg_id == desc->id && strcmp(sub_table[i].msg_name, desc->name) != 0) {
+            IPC_DIAG("ipc: message ID collision 0x%08x between '%s' and '%s'\n",
+                     (unsigned) desc->id, sub_table[i].msg_name, desc->name);
+            return -EEXIST;
+        }
+    }
+#endif
+
+    return 0;
+}
+
 static int register_cmd_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *desc)
 {
     assert(desc->kind == IPC_CMD);
     _ipc_ensure_id(desc);
+
+    int rc = detect_id_collision(desc);
+    if (rc) {
+        return rc;
+    }
 
     for (int i = 0; i < reg_count; i++) {
         if (reg_table[i].msg_id == desc->id) {
@@ -178,8 +208,9 @@ static int register_cmd_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *desc)
         return -ENOMEM;
     }
 
-    reg_table[reg_count].msg_id = desc->id;
-    reg_table[reg_count].actor  = actor;
+    reg_table[reg_count].msg_id   = desc->id;
+    reg_table[reg_count].msg_name = desc->name;
+    reg_table[reg_count].actor    = actor;
     reg_count++;
 
     return 0;
@@ -189,6 +220,11 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
 {
     assert(desc->kind == IPC_EVENT);
     _ipc_ensure_id(desc);
+
+    int rc = detect_id_collision(desc);
+    if (rc) {
+        return rc;
+    }
 
 #if IPC_CORE_MAX_SUBSCRIPTIONS > 0
     for (int i = 0; i < sub_count; i++) {
@@ -202,8 +238,9 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
         return -ENOMEM;
     }
 
-    sub_table[sub_count].msg_id = desc->id;
-    sub_table[sub_count].actor  = actor;
+    sub_table[sub_count].msg_id   = desc->id;
+    sub_table[sub_count].msg_name = desc->name;
+    sub_table[sub_count].actor    = actor;
     sub_count++;
 
     return 0;
@@ -218,6 +255,20 @@ static int subscribe_event_unlocked(struct ipc_actor *actor, ipc_msg_desc_t *des
 static size_t actor_max_payload_size(const struct ipc_actor *actor)
 {
     return actor->cfg.max_payload_size;
+}
+
+static int apply_mailbox_overflow_policy(const struct ipc_actor *actor, int rc)
+{
+    if ((rc != -ENOMEM && rc != -EAGAIN) ||
+        actor->_mailbox_overflow_policy != IPC_MAILBOX_OVERFLOW_DROP) {
+        return rc;
+    }
+
+    uint32_t drops =
+        __atomic_add_fetch(&((struct ipc_actor *) actor)->_dropped_messages, 1, __ATOMIC_RELAXED);
+    IPC_DIAG("ipc: dropped message for '%s' because its mailbox is full (total: %u)\n", actor->name,
+             (unsigned) drops);
+    return IPC_DELIVERY_DROPPED;
 }
 
 static struct ipc_actor *find_registered(uint32_t msg_id)
@@ -415,6 +466,11 @@ void _ipc_actor_register_failure_hook_static(struct ipc_actor *actor, ipc_actor_
     actor->failure_hook = hook;
 }
 
+static bool valid_descriptor(const ipc_msg_desc_t *desc, ipc_msg_kind_t kind)
+{
+    return desc && desc->kind == kind && desc->name;
+}
+
 static struct ipc_msg make_msg(const ipc_msg_desc_t *desc, const void *payload)
 {
     struct ipc_msg msg;
@@ -429,6 +485,9 @@ static struct ipc_msg make_msg(const ipc_msg_desc_t *desc, const void *payload)
 static int prepare_registered_cmd(ipc_msg_desc_t *desc, const void *payload, const char *op,
                                   struct ipc_actor **target, struct ipc_msg *msg)
 {
+    if (!valid_descriptor(desc, IPC_CMD)) {
+        return -EINVAL;
+    }
     _ipc_ensure_id(desc);
     *target = find_registered(desc->id);
     if (!*target) {
@@ -450,7 +509,7 @@ int ipc_send_raw(ipc_msg_desc_t *desc, const void *payload)
     struct ipc_actor *target;
     struct ipc_msg msg;
     int rc = prepare_registered_cmd(desc, payload, "send", &target, &msg);
-    return rc ? rc : ipc_port_send(target, &msg);
+    return rc ? rc : apply_mailbox_overflow_policy(target, ipc_port_send(target, &msg));
 }
 
 /* ── ipc_send_after_raw ──────────────────────────────────────────────────── */
@@ -471,8 +530,8 @@ int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
     if (ask_id_out) {
         *ask_id_out = 0;
     }
-    if (!self || !request_desc || !reply_desc || !callback || request_desc->kind != IPC_CMD ||
-        reply_desc->kind != IPC_CMD) {
+    if (!self || !callback || !valid_descriptor(request_desc, IPC_CMD) ||
+        !valid_descriptor(reply_desc, IPC_CMD)) {
         return -EINVAL;
     }
 
@@ -529,7 +588,7 @@ int ipc_ask_with_id_raw(struct ipc_actor *self, ipc_msg_desc_t *request_desc,
 
     msg.ask_id   = ask_id;
     msg.reply_id = reply_desc->id;
-    rc           = ipc_port_send(target, &msg);
+    rc           = apply_mailbox_overflow_policy(target, ipc_port_send(target, &msg));
     if (rc) {
         lock_asks();
         ipc_pending_ask_t *failed_pending = find_pending_ask(ask_id);
@@ -576,7 +635,7 @@ int ipc_ask_cancel(const struct ipc_actor *self, uint32_t ask_id)
 int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
                   const void *reply_payload)
 {
-    if (!request_msg || !reply_desc || request_msg->ask_id == 0 || reply_desc->kind != IPC_CMD) {
+    if (!request_msg || request_msg->ask_id == 0 || !valid_descriptor(reply_desc, IPC_CMD)) {
         return -EINVAL;
     }
 
@@ -606,7 +665,7 @@ int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
 
     struct ipc_msg msg = make_msg(reply_desc, reply_payload);
     msg.ask_id         = request_msg->ask_id;
-    int rc             = ipc_port_send(target, &msg);
+    int rc             = apply_mailbox_overflow_policy(target, ipc_port_send(target, &msg));
     if (rc) {
         lock_asks();
         ipc_pending_ask_t *failed_pending = find_pending_ask(request_msg->ask_id);
@@ -620,7 +679,7 @@ int ipc_reply_raw(const struct ipc_msg *request_msg, ipc_msg_desc_t *reply_desc,
 
 int ipc_reply_error_raw(const struct ipc_msg *request_msg, int result)
 {
-    if (!request_msg || request_msg->ask_id == 0 || result == 0) {
+    if (!request_msg || request_msg->ask_id == 0 || request_msg->reply_id == 0 || result == 0) {
         return -EINVAL;
     }
 
@@ -722,7 +781,9 @@ static int publish_prepared_msg(const struct ipc_msg *msg, uint32_t msg_id,
     for (int i = 0; i < sub_count; i++) {
         if (sub_table[i].msg_id == msg_id) {
             const struct ipc_actor *actor = sub_table[i].actor;
-            int rc = msg->size > actor_max_payload_size(actor) ? -EMSGSIZE : send_fn(actor, msg);
+            int rc = msg->size > actor_max_payload_size(actor)
+                         ? -EMSGSIZE
+                         : apply_mailbox_overflow_policy(actor, send_fn(actor, msg));
             if (rc && !first_rc) {
                 first_rc = rc;
             }
@@ -743,7 +804,7 @@ int ipc_publish_raw(ipc_msg_desc_t *desc, const void *payload)
 {
     /* Only EVENT descriptors may be published. Without this guard the code
      * below would silently override a command's kind and fan it out. */
-    if (!desc || desc->kind != IPC_EVENT) {
+    if (!valid_descriptor(desc, IPC_EVENT)) {
         return -EINVAL;
     }
     _ipc_ensure_id(desc);
@@ -764,7 +825,7 @@ int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const v
 {
     /* Direct delivery intentionally preserves either command or event kind;
      * callers use it for local mailbox posting, not route/subscription lookup. */
-    if (!actor || !desc) {
+    if (!actor || !desc || (desc->kind != IPC_CMD && desc->kind != IPC_EVENT)) {
         return -EINVAL;
     }
     if (atomic_load_explicit(&lifecycle_state, memory_order_acquire) != IPC_LIFECYCLE_RUNNING) {
@@ -784,7 +845,25 @@ int ipc_send_to_raw(struct ipc_actor *actor, const ipc_msg_desc_t *desc, const v
     msg.size    = desc->size;
     msg.payload = (const uint8_t *) payload;
 
-    return ipc_port_send_isr(actor, &msg);
+    return apply_mailbox_overflow_policy(actor, ipc_port_send_isr(actor, &msg));
+}
+
+int ipc_actor_set_mailbox_overflow_policy(struct ipc_actor *actor,
+                                          ipc_mailbox_overflow_policy_t policy)
+{
+    if (!actor || (policy != IPC_MAILBOX_OVERFLOW_FAIL && policy != IPC_MAILBOX_OVERFLOW_DROP)) {
+        return -EINVAL;
+    }
+    if (atomic_load_explicit(&lifecycle_state, memory_order_acquire) != IPC_LIFECYCLE_STOPPED) {
+        return -EPERM;
+    }
+    actor->_mailbox_overflow_policy = policy;
+    return 0;
+}
+
+uint32_t ipc_actor_dropped_message_count(const struct ipc_actor *actor)
+{
+    return actor ? __atomic_load_n(&actor->_dropped_messages, __ATOMIC_RELAXED) : 0;
 }
 
 /* ── static handler dispatch ────────────────────────────────────────────── */

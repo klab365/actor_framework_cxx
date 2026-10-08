@@ -109,6 +109,41 @@ TEST_F(ErrorPathTest, DuplicateEventHandlerRegistrationTerminates)
                  "duplicate subscription");
 }
 
+TEST_F(ErrorPathTest, CommandHashCollisionTerminatesWithBothNamesAndId)
+{
+    ipc_msg_desc_t first  = {.id = 0x12345678, .kind = IPC_CMD, .size = 0, .name = "first_command"};
+    ipc_msg_desc_t second = {
+        .id = 0x12345678, .kind = IPC_CMD, .size = 0, .name = "second_command"};
+    struct ipc_actor other{};
+
+    register_static_handler(&g_actor, "first_actor", &first, on_msg_a_shim);
+    ASSERT_DEATH(_ipc_actor_register_handler_static(&other, &second, on_msg_b_shim),
+                 "0x12345678.*first_command.*second_command");
+}
+
+TEST_F(ErrorPathTest, EventHashCollisionTerminatesWithBothNamesAndId)
+{
+    ipc_msg_desc_t first  = {.id = 0x87654321, .kind = IPC_EVENT, .size = 0, .name = "first_event"};
+    ipc_msg_desc_t second = {
+        .id = 0x87654321, .kind = IPC_EVENT, .size = 0, .name = "second_event"};
+    struct ipc_actor other{};
+
+    register_static_handler(&g_actor, "first_actor", &first, on_evt_a_shim);
+    ASSERT_DEATH(_ipc_actor_register_handler_static(&other, &second, on_evt_a_shim),
+                 "0x87654321.*first_event.*second_event");
+}
+
+TEST_F(ErrorPathTest, RawSendApisRejectInvalidDescriptorsAndPayloads)
+{
+    ipc_msg_desc_t invalid = {.id = 1, .kind = IPC_EVENT, .size = 0, .name = "invalid"};
+    EXPECT_EQ(ipc_send_raw(nullptr, nullptr), -EINVAL);
+    EXPECT_EQ(ipc_send_raw(&invalid, nullptr), -EINVAL);
+    EXPECT_EQ(ipc_send_after_raw(&invalid, 1, nullptr), -EINVAL);
+    EXPECT_EQ(ipc_publish_raw(&MsgA, nullptr), -EINVAL);
+    EXPECT_EQ(ipc_publish_raw(&EvtA, nullptr), 0);
+    EXPECT_EQ(ipc_send_to_raw(nullptr, &MsgA, nullptr), -EINVAL);
+}
+
 TEST_F(ErrorPathTest, SendToHandlerNullActorSucceedsWithoutDispatch)
 {
     register_static_handler(&g_no_handler, "no_handler_actor", &MsgA, on_msg_a_shim);
@@ -175,6 +210,43 @@ TEST_F(ErrorPathTest, PublishMacroPropagatesError)
     mock_port_set_send_should_fail(true);
     EvtA_payload_t p = {.v = 3};
     EXPECT_EQ(ipc_publish(EvtA, p), -ENOMEM);
+}
+
+TEST_F(ErrorPathTest, FullMailboxUsesConfiguredNonBlockingPolicy)
+{
+    register_static_handler(&g_actor, "test_actor", &MsgA, on_msg_a_shim);
+    MsgA_payload_t payload = {.x = 1};
+
+    mock_port_set_next_send_rc(-ENOMEM);
+    EXPECT_EQ(ipc_send_raw(&MsgA, &payload), -ENOMEM);
+    EXPECT_EQ(ipc_actor_dropped_message_count(&g_actor), 0u);
+
+    ASSERT_EQ(ipc_actor_set_mailbox_overflow_policy(&g_actor, IPC_MAILBOX_OVERFLOW_DROP), 0);
+    mock_port_set_next_send_rc(-EAGAIN);
+    EXPECT_EQ(ipc_send_raw(&MsgA, &payload), IPC_DELIVERY_DROPPED);
+    EXPECT_EQ(ipc_actor_dropped_message_count(&g_actor), 1u);
+}
+
+TEST_F(ErrorPathTest, MailboxOverflowPolicyRejectsInvalidActorPolicyAndLifecycle)
+{
+    EXPECT_EQ(ipc_actor_set_mailbox_overflow_policy(nullptr, IPC_MAILBOX_OVERFLOW_DROP), -EINVAL);
+    EXPECT_EQ(ipc_actor_set_mailbox_overflow_policy(&g_actor,
+                                                    static_cast<ipc_mailbox_overflow_policy_t>(2)),
+              -EINVAL);
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(ipc_actor_set_mailbox_overflow_policy(&g_actor, IPC_MAILBOX_OVERFLOW_DROP), -EPERM);
+}
+
+TEST_F(ErrorPathTest, EventDropPolicyReportsFullMailboxDrops)
+{
+    register_static_handler(&g_actor, "test_actor", &EvtA, on_evt_a_shim);
+    ASSERT_EQ(ipc_actor_set_mailbox_overflow_policy(&g_actor, IPC_MAILBOX_OVERFLOW_DROP), 0);
+    EvtA_payload_t payload = {.v = 1};
+
+    mock_port_set_next_send_rc(-ENOMEM);
+    EXPECT_EQ(ipc_publish_raw(&EvtA, &payload), IPC_DELIVERY_DROPPED);
+    EXPECT_EQ(ipc_actor_dropped_message_count(&g_actor), 1u);
 }
 
 TEST_F(ErrorPathTest, SendPropagatesPortErrors)
