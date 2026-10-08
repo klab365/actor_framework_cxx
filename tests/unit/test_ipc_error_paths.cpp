@@ -227,6 +227,17 @@ TEST_F(ErrorPathTest, FullMailboxUsesConfiguredNonBlockingPolicy)
     EXPECT_EQ(ipc_actor_dropped_message_count(&g_actor), 1u);
 }
 
+TEST_F(ErrorPathTest, MailboxOverflowPolicyRejectsInvalidActorPolicyAndLifecycle)
+{
+    EXPECT_EQ(ipc_actor_set_mailbox_overflow_policy(nullptr, IPC_MAILBOX_OVERFLOW_DROP), -EINVAL);
+    EXPECT_EQ(ipc_actor_set_mailbox_overflow_policy(&g_actor,
+                                                    static_cast<ipc_mailbox_overflow_policy_t>(2)),
+              -EINVAL);
+
+    ASSERT_EQ(ipc_start_all_actors(), 0);
+    EXPECT_EQ(ipc_actor_set_mailbox_overflow_policy(&g_actor, IPC_MAILBOX_OVERFLOW_DROP), -EPERM);
+}
+
 TEST_F(ErrorPathTest, EventDropPolicyReportsFullMailboxDrops)
 {
     register_static_handler(&g_actor, "test_actor", &EvtA, on_evt_a_shim);
